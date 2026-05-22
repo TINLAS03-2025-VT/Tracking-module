@@ -1,0 +1,3 @@
+opencv-python
+apriltag-python
+matplotlib
