@@ -1,41 +1,12 @@
 # Tracking Module
 
-AprilTag tracking module for the TINLAS03 Jachtseizoen robot project.
+## Intro
+In this repo the apriltags based localization code for camera based tracking of the robots resides.
 
-Current milestone:
+## Commands
+For the commands, enter a python venv. Install the requirements given in the requirements.txt. Then change directory to the main project dir.
 
-- Docker container builds
-- Python starts
-- OpenCV imports
-- AprilTag library imports
-- Detector can run on a dummy image
-- No ROS yet
-
-## Self-test without camera
-
-```bash
-docker compose -f compose.test.yaml build --no-cache
-docker compose -f compose.test.yaml run --rm tracker-test
-
-cat > README.md <<'EOF'
-# Tracking Module
-
-AprilTag tracking module for the TINLAS03 Jachtseizoen robot project.
-
-Current milestone:
-
-- Docker container builds
-- Python starts
-- OpenCV imports
-- AprilTag library imports
-- Detector can run on a dummy image
-- No ROS yet
-
-## Self-test without camera
-
-```bash
-docker compose -f compose.test.yaml build --no-cache
-docker compose -f compose.test.yaml run --rm tracker-test
+- Start 30 seconds calibration for a 10x7 checkerboard pattern size 23mm at camera device 5: `python src/calibrate_camera.py -r 6 -c 9 -s 23 -i 5`
 
 
-
+- Start the localization: `python src/main`

@@ -15,5 +15,5 @@ services:
       - SCALE_X=200
       - SCALE_Y=200
     devices:
-      - /dev/video0:/dev/video0
+      - /dev/video5:/dev/video0
     command: python src/main_container.py

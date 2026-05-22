@@ -15,7 +15,7 @@ detector = apriltag.apriltag(
 )
 
 # Camera calibration parameters
-cam_cal = defines.microsoft_cam
+cam_cal = defines.sotp_cam
 
 cap = cv2.VideoCapture(5)
 
