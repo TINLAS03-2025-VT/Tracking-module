@@ -1,0 +1,9 @@
+services:
+  tracker-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tracking-module:local
+    container_name: tracking-module-test
+    restart: "no"
+    command: python src/self_test.py

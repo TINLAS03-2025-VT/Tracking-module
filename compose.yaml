@@ -1,0 +1,19 @@
+services:
+  tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tracking-module:local
+    container_name: tracking-module
+    restart: "no"
+    environment:
+      - CAMERA_INDEX=0
+      - CAMERA_PROFILE=microsoft_cam
+      - REFERENCE_TAG_0=0
+      - REFERENCE_TAG_1=1
+      - TARGET_TAGS=2,3
+      - SCALE_X=200
+      - SCALE_Y=200
+#    devices:
+#      - /dev/video0:/dev/video0
+    command: python src/main_container.py
