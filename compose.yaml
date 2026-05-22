@@ -14,6 +14,6 @@ services:
       - TARGET_TAGS=2,3
       - SCALE_X=200
       - SCALE_Y=200
-#    devices:
-#      - /dev/video0:/dev/video0
+    devices:
+      - /dev/video0:/dev/video0
     command: python src/main_container.py
