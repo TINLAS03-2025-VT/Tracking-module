@@ -6,14 +6,22 @@ services:
     image: tracking-module:local
     container_name: tracking-module
     restart: "no"
+    network_mode: host
+    ipc: host
     environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_LOCALHOST_ONLY=0
+
       - CAMERA_INDEX=0
       - CAMERA_PROFILE=microsoft_cam
       - REFERENCE_TAG_0=0
       - REFERENCE_TAG_1=1
-      - TARGET_TAGS=2,3
+      - TARGET_TAGS=2:robot_1,3:robot_2
       - SCALE_X=200
       - SCALE_Y=200
+      - OUTPUT_TOPIC=/robots/pos
+      - PUBLISH_INDIVIDUAL_POSES=true
     devices:
-      - /dev/video5:/dev/video0
-    command: python src/main_container.py
+      - /dev/video0:/dev/video0
+    command: python3 src/main_ros.py

@@ -1,0 +1,15 @@
+services:
+  tracker-ros-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tracking-module:local
+    container_name: tracking-module-ros-test
+    restart: "no"
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_LOCALHOST_ONLY=0
+    command: python3 src/ros_self_test.py
