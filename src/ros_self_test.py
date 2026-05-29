@@ -1,3 +1,4 @@
+import os
 import time
 
 import rclpy
@@ -37,10 +38,14 @@ def main():
     rclpy.init()
     node = RosSelfTest()
 
+    count = int(os.getenv("SELF_TEST_COUNT", "0"))
+    published = 0
+
     try:
-        for _ in range(20):
+        while rclpy.ok() and (count == 0 or published < count):
             node.publish_test_messages()
             rclpy.spin_once(node, timeout_sec=0.1)
+            published += 1
             time.sleep(0.5)
     finally:
         node.destroy_node()

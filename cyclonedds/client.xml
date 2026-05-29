@@ -1,0 +1,18 @@
+<CycloneDDS>
+  <Domain id="any">
+    <General>
+      <NetworkInterfaceAddress>wg0</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer Address="10.13.13.1"/>
+      </Peers>
+    </Discovery>
+    <Tracing>
+      <Verbosity>severe</Verbosity>
+      <OutputFile>stdout</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>

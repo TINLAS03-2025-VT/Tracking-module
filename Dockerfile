@@ -4,9 +4,6 @@ SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV ROS_DOMAIN_ID=0
-ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-ENV ROS_LOCALHOST_ONLY=0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
@@ -17,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     iproute2 \
     iputils-ping \
+    ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
