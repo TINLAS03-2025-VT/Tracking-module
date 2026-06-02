@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("-0", "--reference-tag-0", type=int, default=int(os.getenv("REFERENCE_TAG_0", "0")), help="tag ID for reference tag at location {x: 0, y: 0} (default: 0)")
     parser.add_argument("-1", "--reference-tag-1", type=int, default=int(os.getenv("REFERENCE_TAG_1", "1")), help="tag ID for reference tag at location {x: SCALE_X, y: SCALE_Y} (default: 1)")
     parser.add_argument("-a", "--alpha", type=float, default=float(os.getenv("TRACKER_ALPHA", "0.3")), help="weight alpha for exponential moving average (default: 0.3)")
+    parser.add_argument("--disable-ocl", action="store_true", help="force disable OpenCL acceleration")
     return parser.parse_args()
 
 
@@ -49,11 +50,22 @@ def main():
     cam_cal = get_camera_calibration(args.camera_profile)
     fx, fy, cx, cy = cam_cal["fx"], cam_cal["fy"], cam_cal["cx"], cam_cal["cy"]
 
+    if args.disable_ocl:
+        cv2.ocl.setUseOpenCL(False)
+    else:
+        cv2.ocl.setUseOpenCL(True)
+    ocl_enabled = cv2.ocl.useOpenCL()
+
+    decimate_factor = 2.0
+
+    fx_det, fy_det = fx / decimate_factor, fy / decimate_factor
+    cx_det, cy_det = cx / decimate_factor, cy / decimate_factor
+
     detector = apriltag.apriltag(
     	family='tagStandard41h12',  # Tag family
-	    threads=10,                 # Number of threads
+	    threads=4,                  # Number of threads
 	    maxhamming=1,               # Maximum hamming distance for error correction
-	    decimate=2.0,               # Image downsampling factor
+	    decimate=1.0,               # Image downsampling factor
 	    blur=0.0,                   # Gaussian blur sigma
 	    refine_edges=True,          # Refine quad edges
 	    debug=False                 # Debug mode
@@ -80,6 +92,7 @@ def main():
         "scale": [args.scale_x, args.scale_y],
         "show": args.show,
         "alpha": args.alpha,
+        "opencl_accelerated": ocl_enabled
     }), flush=True)
 
     try:
@@ -90,22 +103,42 @@ def main():
                 time.sleep(0.2)
                 continue
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            detections = detector.detect(gray)
+            if ocl_enabled:
+                umat_frame = cv2.UMat(frame)
+                umat_gray = cv2.cvtColor(umat_frame, cv2.COLOR_BGR2GRAY)
+                umat_gray = cv2.GaussianBlur(umat_gray, (3, 3), 0)
+
+                if decimate_factor > 1.0:
+                    width = int(frame.shape[1] / decimate_factor)
+                    height = int(frame.shape[0] / decimate_factor)
+                    umat_gray = cv2.resize(umat_gray, (width, height), interpolation=cv2.INTER_LINEAR)
+
+                gray_for_detector = umat_gray.get()
+            else:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if decimate_factor > 1.0:
+                    width = int(frame.shape[1] / decimate_factor)
+                    height = int(frame.shape[0] / decimate_factor)
+                    gray = cv2.resize(gray, (width, height), interpolation=cv2.INTER_LINEAR)
+                gray_for_detector = gray
+
+            detections = detector.detect(gray_for_detector)
 
             frame_poses = {}
             frame_centers = {}
 
             for det in detections:
                 tag_id = int(det["id"])
-                center = np.array(det["center"], dtype=np.float32)
+                center = np.array(det["center"], dtype=np.float32) * decimate_factor
                 frame_centers[tag_id] = center
 
-                pose = detector.estimate_tag_pose(det, args.tag_size, fx, fy, cx, cy)
-                frame_poses[tag_id] = make_4x4_matrix(pose['R'], pose['t'])
+                pose = detector.estimate_tag_pose(det, args.tag_size, fx_det, fy_det, cx_det, cy_det)
+                T = make_4x4_matrix(pose['R'], pose['t'])
+                T[0:3, 3] *= decimate_factor
+                frame_poses[tag_id] = T
 
                 if args.show:
-                    corners = np.array(det["lb-rb-rt-lt"], dtype=np.int32)
+                    corners = (np.array(det["lb-rb-rt-lt"], dtype=np.int32) * decimate_factor).astype(np.int32)
                     center_int = tuple(center.astype(int))
                     cv2.polylines(frame, [corners], True, (0,255,0), 2)
                     cv2.circle(frame, center_int, 5, (0, 0, 255), -1)

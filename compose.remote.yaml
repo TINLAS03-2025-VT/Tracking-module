@@ -36,13 +36,13 @@ services:
       - CAMERA_PROFILE=microsoft_cam
       - REFERENCE_TAG_0=0
       - REFERENCE_TAG_1=1
-      - TARGET_TAGS=2:robot_1,3:robot_2
+      - TARGET_TAGS=2:robot_1,3:robot_2,4:robot_3,5:robot_4
       - SCALE_X=200
       - SCALE_Y=200
       - OUTPUT_TOPIC=/robots/pos
       - PUBLISH_INDIVIDUAL_POSES=true
     devices:
-      - /dev/video0:/dev/video0
+      - /dev/video5:/dev/video0
     command: >
       bash -lc "
       source /opt/ros/humble/setup.bash &&
