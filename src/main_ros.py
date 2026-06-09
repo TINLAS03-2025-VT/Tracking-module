@@ -3,11 +3,15 @@ import json
 import math
 import os
 import time
+from threading import Thread # Added for web server
 from typing import Dict, List, Tuple
 
 import apriltag
 import cv2
 import numpy as np
+
+# Flask dependencies
+from flask import Flask, Response, render_html
 
 import rclpy
 from rclpy.node import Node
@@ -15,6 +19,48 @@ from geometry_msgs.msg import PoseArray, Pose, PoseStamped
 
 import defines
 
+# --- Flask App Setup ---
+app = Flask(__name__)
+output_frame = None
+
+@app.route('/')
+def index():
+    # A tiny HTML wrapper to display just the image
+    return """
+    <html>
+      <head><title>AprilTag Stream</title></head>
+      <body style="margin:0; background:#111; display:flex; justify-content:center; align-items:center; height:100vh;">
+        <img src="/video_feed" style="max-width:100%; max-height:100%; object-fit:contain;">
+      </body>
+    </html>
+    """
+
+def generate_frames():
+    global output_frame
+    while True:
+        if output_frame is None:
+            time.sleep(0.03)
+            continue
+
+        # Downscale the frame for the web view (e.g., to 640x480 or half size)
+        downscaled = cv2.resize(output_frame, (640, 480), interpolation=cv2.INTER_AREA)
+
+        # Encode as JPEG
+        ret, buffer = cv2.imencode('.jpg', downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ret:
+            continue
+
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def run_flask():
+    # Runs the web server on port 5000, visible externally
+    app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
 
 def parse_args():
     valid_profiles = [
@@ -114,6 +160,7 @@ class AprilTagRosTracker(Node):
 
 
 def main():
+    global output_frame
     args = parse_args()
     cam_cal = get_camera_calibration(args.camera_profile)
     fx, fy, cx, cy = cam_cal["fx"], cam_cal["fy"], cam_cal["cx"], cam_cal["cy"]
@@ -121,12 +168,12 @@ def main():
     rclpy.init()
     node = AprilTagRosTracker(args)
 
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
     detector = apriltag.apriltag(
         family="tagStandard41h12",
         threads=8,
-        maxhamming=1,
-        decimate=1.0,
-        blur=0.2,
         refine_edges=True,
         debug=False,
     )
@@ -345,6 +392,8 @@ def main():
                 cv2.imshow("AprilTag ROS 3D Pose Tracker", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
+
+            output_frame = frame.copy()
 
             rclpy.spin_once(node, timeout_sec=0.0)
             time.sleep(0.05)
