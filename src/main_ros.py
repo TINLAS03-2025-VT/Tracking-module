@@ -340,7 +340,7 @@ def main():
                     break
 
             rclpy.spin_once(node, timeout_sec=0.0)
-            time.sleep(0.05)
+            time.sleep(0.2)
 
     finally:
         cap.release()
