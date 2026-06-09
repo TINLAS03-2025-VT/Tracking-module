@@ -393,7 +393,7 @@ def main():
                     cv2.imshow("AprilTag ROS 3D Pose Tracker", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
-                except cv.error:
+                except cv2.error:
                     pass
 
             output_frame = frame.copy()
