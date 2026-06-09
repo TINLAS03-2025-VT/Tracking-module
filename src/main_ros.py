@@ -389,9 +389,12 @@ def main():
             if args.show:
                 if not map_calibrated:
                     cv2.putText(frame, "Calibration Targets Lost", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.imshow("AprilTag ROS 3D Pose Tracker", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                try:
+                    cv2.imshow("AprilTag ROS 3D Pose Tracker", frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                except cv.error:
+                    pass
 
             output_frame = frame.copy()
 
@@ -401,7 +404,10 @@ def main():
     finally:
         cap.release()
         if args.show:
-            cv2.destroyAllWindows()
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
         node.destroy_node()
         rclpy.shutdown()
 
