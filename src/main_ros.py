@@ -3,7 +3,7 @@ import json
 import math
 import os
 import time
-from threading import Thread # Added for web server
+from threading import Thread
 from typing import Dict, List, Tuple
 
 import apriltag
@@ -25,7 +25,6 @@ output_frame = None
 
 @app.route('/')
 def index():
-	# A tiny HTML wrapper to display just the image
 	return """
 	<html>
 	<head><title>AprilTag Stream</title></head>
@@ -41,26 +40,76 @@ def generate_frames():
 		if output_frame is None:
 			time.sleep(0.03)
 			continue
-
-		# Downscale the frame for the web view (e.g., to 640x480 or half size)
 		downscaled = cv2.resize(output_frame, (640, 360), interpolation=cv2.INTER_AREA)
-
-		# Encode as JPEG
 		ret, buffer = cv2.imencode('.jpg', downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
 		if not ret:
 			continue
-
-		frame_bytes = buffer.tobytes()
 		yield (b'--frame\r\n'
-			b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+			b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
 @app.route('/video_feed')
 def video_feed():
 	return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def run_flask():
-	# Runs the web server on port 5000, visible externally
 	app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
+
+
+# --- Kalman Filter Engine ---
+class RobotKalmanFilter:
+	def __init__(self, initial_x: float, initial_y: float, initial_theta_rad: float):
+		# State vector: [x, y, theta, omega (angular velocity)]
+		self.x = np.array([[initial_x],
+						[initial_y],
+						[initial_theta_rad],
+						[0.0]], dtype=np.float32)
+
+		# State covariance (Uncertainty)
+		self.P = np.eye(4, dtype=np.float32) * 1.0
+
+		# Process Noise (System uncertainty - physics model noise)
+		self.Q = np.diag([0.1, 0.1, 0.05, 0.2]).astype(np.float32)
+
+		# Measurement Noise (AprilTag jitter - high variance placed on angle)
+		self.R = np.diag([0.05, 0.05, 0.25]).astype(np.float32)
+
+		# Measurement Matrix
+		self.H = np.array([
+			[1, 0, 0, 0],
+			[0, 1, 0, 0],
+			[0, 0, 1, 0]
+		], dtype=np.float32)
+
+	def predict(self, dt: float):
+		# Kinematic state transition matrix
+		F = np.array([
+			[1, 0, 0,  0],
+			[0, 1, 0,  0],
+			[0, 0, 1, dt],
+			[0, 0, 0,  1]
+		], dtype=np.float32)
+
+		self.x = F @ self.x
+		# Normalize predicted heading to range [-pi, pi]
+		self.x[2, 0] = (self.x[2, 0] + np.pi) % (2 * np.pi) - np.pi
+		self.P = F @ self.P @ F.T + self.Q
+
+	def update(self, z_x: float, z_y: float, z_theta_rad: float):
+		z = np.array([[z_x], [z_y], [z_theta_rad]], dtype=np.float32)
+		y = z - (self.H @ self.x)
+
+		# Critical angle error wrap-around resolution
+		y[2, 0] = (y[2, 0] + np.pi) % (2 * np.pi) - np.pi
+
+		S = self.H @ self.P @ self.H.T + self.R
+		K = self.P @ self.H.T @ np.linalg.inv(S)
+
+		self.x = self.x + K @ y
+		self.x[2, 0] = (self.x[2, 0] + np.pi) % (2 * np.pi) - np.pi
+		self.P = (np.eye(4, dtype=np.float32) - K @ self.H) @ self.P
+
+		return self.x[0, 0], self.x[1, 0], self.x[2, 0]
+
 
 def parse_args():
 	valid_profiles = [
@@ -78,7 +127,7 @@ def parse_args():
 	parser.add_argument("-y", "--scale-y", type=float, default=float(os.getenv("SCALE_Y", "200")), help="y-axis scale to map the locations to (default: 200.0)")
 	parser.add_argument("-0", "--reference-tag-0", type=int, default=int(os.getenv("REFERENCE_TAG_0", "0")), help="tag ID for reference tag at location {x: 0, y: 0} (default: 0)")
 	parser.add_argument("-1", "--reference-tag-1", type=int, default=int(os.getenv("REFERENCE_TAG_1", "1")), help="tag ID for reference tag at location {x: SCALE_X, y: SCALE_Y} (default: 1)")
-	parser.add_argument("-a", "--alpha", type=float, default=float(os.getenv("TRACKER_ALPHA", "0.3")), help="weight alpha for exponential moving average (default: 0.3)")
+	parser.add_argument("-a", "--alpha", type=float, default=float(os.getenv("TRACKER_ALPHA", "0.3")), help="Legacy EMA Alpha (Ignored, now using Kalman Filtering)")
 	parser.add_argument("--target-tags", default=os.getenv("TARGET_TAGS", "2:robot_1,3:robot_2"), help="Mapping target tags to robot names")
 	parser.add_argument("--output-topic", default=os.getenv("OUTPUT_TOPIC", "/robots/pos"), help="ROS 2 topic for aggregate poses")
 	parser.add_argument("--publish-individual-poses", default=os.getenv("PUBLISH_INDIVIDUAL_POSES", "true").lower() == "true", action=argparse.BooleanOptionalAction, help="Publish independent PoseStamped topics for each robot")
@@ -97,7 +146,6 @@ def parse_target_tags(raw: str) -> Dict[int, str]:
 			result[int(item)] = f"robot_{index}"
 	return result
 
-
 def get_camera_calibration(profile_name):
 	if not hasattr(defines, profile_name):
 		raise ValueError(f"Unknown camera profile: {profile_name}")
@@ -109,7 +157,6 @@ def make_4x4_matrix(R, t):
 	T[0:3, 3] = t.flatten()
 	return T
 
-
 def yaw_to_pose_orientation(pose: Pose, yaw_rad: float):
 	half = yaw_rad / 2.0
 	pose.orientation.x = 0.0
@@ -117,24 +164,20 @@ def yaw_to_pose_orientation(pose: Pose, yaw_rad: float):
 	pose.orientation.z = math.sin(half)
 	pose.orientation.w = math.cos(half)
 
+
 class AprilTagRosTracker(Node):
 	def __init__(self, args):
 		super().__init__("apriltag_tracker")
-
 		self.args = args
 		self.target_tag_map = parse_target_tags(args.target_tags)
-
 		self.pose_array_pub = self.create_publisher(PoseArray, args.output_topic, 10)
 		self.individual_pubs = {}
-
 		self.get_logger().info(f"Publishing aggregate poses to {args.output_topic}")
-		self.get_logger().info(f"Target tag map: {self.target_tag_map}")
 
 	def get_individual_pub(self, robot_id: str):
 		if robot_id not in self.individual_pubs:
 			topic = f"/{robot_id}/pose"
 			self.individual_pubs[robot_id] = self.create_publisher(PoseStamped, topic, 10)
-			self.get_logger().info(f"Publishing individual pose to {topic}")
 		return self.individual_pubs[robot_id]
 
 	def publish_poses(self, robots: List[Tuple[str, float, float, float]]):
@@ -184,18 +227,13 @@ def main():
 		raise RuntimeError(f"Could not open camera index {args.camera_index}")
 
 	tracked_robots = {}
-	angle_buffers = {}
+	kf_bank = {}  # Object bank tracking target_id -> RobotKalmanFilter
+	last_frame_time = time.time()
 
 	map_calibrated = False
 	R_ref0_to_stable = None
 	scale_factor = 1.0
 	theta_rad = 0.0
-
-	smoothed_R_ref0 = None
-	smoothed_scale_factor = 1.0
-	smoothed_theta_rad = 0.0
-	calibration_frames_tracked = 0
-	CALIBRATION_LOCK_THRESHOLD = 50
 
 	print(json.dumps({
 		"event": "ros_tracker_started",
@@ -203,10 +241,7 @@ def main():
 		"camera_profile": args.camera_profile,
 		"reference_tags": [args.reference_tag_0, args.reference_tag_1],
 		"target_tag_map": node.target_tag_map,
-		"scale": [args.scale_x, args.scale_y],
-		"output_topic": args.output_topic,
-		"publish_individual_poses": args.publish_individual_poses,
-		"show": args.show,
+		"scale": [args.scale_x, args.scale_y]
 	}), flush=True)
 
 	try:
@@ -214,8 +249,14 @@ def main():
 			ret, frame = cap.read()
 			if not ret:
 				node.get_logger().warn("Camera frame dropped.")
-				time.sleep(0.2)
+				time.sleep(0.03)
 				continue
+
+			current_time = time.time()
+			dt = current_time - last_frame_time
+			last_frame_time = current_time
+			if dt <= 0:
+				dt = 0.033
 
 			gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 			detections = detector.detect(gray)
@@ -238,63 +279,38 @@ def main():
 					cv2.circle(frame, center_int, 5, (0, 0, 255), -1)
 					cv2.putText(frame, str(tag_id), center_int, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
-			if args.reference_tag_0 in frame_poses and args.reference_tag_1 in frame_poses:
-				if calibration_frames_tracked < CALIBRATION_LOCK_THRESHOLD or CALIBRATION_LOCK_THRESHOLD == 0:
-					T_cam_ref0 = frame_poses[args.reference_tag_0]
-					T_cam_ref1 = frame_poses[args.reference_tag_1]
-					T_ref0_cam = np.linalg.inv(T_cam_ref0)
+			# --- Map Ground Plane System (Calibrate ONCE to preserve grid integrity) ---
+			if not map_calibrated and args.reference_tag_0 in frame_poses and args.reference_tag_1 in frame_poses:
+				T_cam_ref0 = frame_poses[args.reference_tag_0]
+				T_cam_ref1 = frame_poses[args.reference_tag_1]
+				T_ref0_cam = np.linalg.inv(T_cam_ref0)
 
-					p1_in_ref0 = T_ref0_cam @ np.append(T_cam_ref1[0:3, 3], 1.0)
-					v_ref0 = p1_in_ref0[0:3]
-					d_phys = np.linalg.norm(v_ref0)
+				p1_in_ref0 = T_ref0_cam @ np.append(T_cam_ref1[0:3, 3], 1.0)
+				v_ref0 = p1_in_ref0[0:3]
+				d_phys = np.linalg.norm(v_ref0)
 
-					if d_phys > 0.001:
-						n_ref0 = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-						u_y_ref0= np.cross(n_ref0, v_ref0)
-						u_y_norm = np.linalg.norm(u_y_ref0)
+				if d_phys > 0.001:
+					n_ref0 = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+					u_y_ref0 = np.cross(n_ref0, v_ref0)
+					u_y_norm = np.linalg.norm(u_y_ref0)
 
-						if u_y_norm > 0.001:
-							u_y_ref0 /= u_y_norm
-							u_z_ref0 = np.cross(v_ref0, u_y_ref0)
-							u_z_ref0 /= np.linalg.norm(u_z_ref0)
-							u_x_ref0 = np.cross(u_y_ref0, u_z_ref0)
-							u_x_ref0 /= np.linalg.norm(u_x_ref0)
+					if u_y_norm > 0.001:
+						u_y_ref0 /= u_y_norm
+						u_z_ref0 = np.cross(v_ref0, u_y_ref0)
+						u_z_ref0 /= np.linalg.norm(u_z_ref0)
+						u_x_ref0 = np.cross(u_y_ref0, u_z_ref0)
+						u_x_ref0 /= np.linalg.norm(u_x_ref0)
 
-							raw_R = np.stack([u_x_ref0, u_y_ref0, u_z_ref0], axis=1)
-							raw_scale = math.hypot(args.scale_x, args.scale_y) / d_phys
-							raw_theta = math.atan2(args.scale_y, args.scale_x)
+						R_ref0_to_stable = np.stack([u_x_ref0, u_y_ref0, u_z_ref0], axis=1)
+						scale_factor = math.hypot(args.scale_x, args.scale_y) / d_phys
+						theta_rad = math.atan2(args.scale_y, args.scale_x)
+						map_calibrated = True
+						node.get_logger().info("🔒 Grid Locked perfectly. Processing Kalman Filters...")
 
-							cal_alpha = 0.1
-
-							if smoothed_R_ref0 is None:
-								smoothed_R_ref0 = raw_R
-								smoothed_scale_factor = raw_scale
-								smoothed_theta_rad = raw_theta
-							else:
-								smoothed_R_ref0 = (cal_alpha * raw_R) + ((1.0 - cal_alpha) * smoothed_R_ref0)
-								smoothed_scale_factor = (cal_alpha * raw_scale) + ((1.0 - cal_alpha) * smoothed_scale_factor)
-								# Handle angle wrap-around safely
-								smoothed_theta_rad = smoothed_theta_rad + cal_alpha * math.atan2(
-									math.sin(raw_theta - smoothed_theta_rad),
-									math.cos(raw_theta - smoothed_theta_rad)
-								)
-
-							U, _, Vt = np.linalg.svd(smoothed_R_ref0)
-							R_ref0_to_stable = U @ Vt
-
-							scale_factor = smoothed_scale_factor
-							theta_rad = smoothed_theta_rad
-
-							calibration_frames_tracked += 1
-							map_calibrated = True
-
-							if calibration_frames_tracked == CALIBRATION_LOCK_THRESHOLD:
-								node.get_logger().info("🔑 Calibration matrix securely LOCKED and stabilized.")
-
+			# --- Project Field Space Bounds ---
 			if args.show and map_calibrated and args.reference_tag_0 in frame_poses:
 				T_cam_ref0 = frame_poses[args.reference_tag_0]
-				cos_t = math.cos(theta_rad)
-				sin_t = math.sin(theta_rad)
+				cos_t, sin_t = math.cos(theta_rad), math.sin(theta_rad)
 				map_corners = [(0, 0), (args.scale_x, 0), (args.scale_x, args.scale_y), (0, args.scale_y)]
 				field_corners_3d = []
 				inv_s = 1.0 / scale_factor
@@ -308,21 +324,18 @@ def main():
 					field_corners_3d.append(p_cam[0:3])
 
 				camera_matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
-				dist_coeffs = np.zeros(4, dtype=np.float32)
-				img_pts, _ = cv2.projectPoints(np.array(field_corners_3d, dtype=np.float32), np.zeros(3), np.zeros(3), camera_matrix, dist_coeffs)
+				img_pts, _ = cv2.projectPoints(np.array(field_corners_3d, dtype=np.float32), np.zeros(3), np.zeros(3), camera_matrix, np.zeros(4, dtype=np.float32))
 				img_pts = img_pts.reshape(-1, 2).astype(np.int32)
-
 				cv2.polylines(frame, [img_pts], True, (255, 0, 255), 2)
-				cv2.putText(frame, "Field Plane Grid", tuple(img_pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
 			robots_for_ros = []
 			robots_for_json = []
 
+			# --- Target Localization & Kalman Engine Processing ---
 			if map_calibrated and args.reference_tag_0 in frame_poses:
 				T_cam_ref0 = frame_poses[args.reference_tag_0]
 				T_ref0_cam = np.linalg.inv(T_cam_ref0)
-				cos_t = math.cos(theta_rad)
-				sin_t = math.sin(theta_rad)
+				cos_t, sin_t = math.cos(theta_rad), math.sin(theta_rad)
 
 				for target_id, robot_id in node.target_tag_map.items():
 					if target_id not in frame_poses:
@@ -345,54 +358,42 @@ def main():
 						[0, 0, 1]
 					], dtype=np.float32)
 					R_map_target = R_z.T @ R_stable_target
-					map_angle_deg = math.degrees(math.atan2(R_map_target[1, 0], R_map_target[0, 0])) % 360.0
+					map_angle_rad = math.atan2(R_map_target[1, 0], R_map_target[0, 0])
 
-					# Apply Filtering
-					if target_id in tracked_robots:
-						old_x = tracked_robots[target_id]["x"]
-						old_y = tracked_robots[target_id]["y"]
+					# Force incoming angle normalized bounded to [-pi, pi]
+					map_angle_rad = (map_angle_rad + np.pi) % (2 * np.pi) - np.pi
 
-						filtered_x = (args.alpha * raw_x) + ((1 - args.alpha) * old_x)
-						filtered_y = (args.alpha * raw_y) + ((1 - args.alpha) * old_y)
+					# Execution of Kalman filter instance
+					if target_id not in kf_bank:
+						kf_bank[target_id] = RobotKalmanFilter(raw_x, raw_y, map_angle_rad)
 
-						current_sin = math.sin(math.radians(map_angle_deg))
-						current_cos = math.cos(math.radians(map_angle_deg))
+					kf_bank[target_id].predict(dt)
+					filt_x, filt_y, filt_rot_rad = kf_bank[target_id].update(raw_x, raw_y, map_angle_rad)
 
-						angle_buffers[target_id]["sin"] = (args.alpha * current_sin) + ((1 - args.alpha) * angle_buffers[target_id]["sin"])
-						angle_buffers[target_id]["cos"] = (args.alpha * current_cos) + ((1 - args.alpha) * angle_buffers[target_id]["cos"])
-
-						filtered_rot = math.degrees(math.atan2(angle_buffers[target_id]["sin"], angle_buffers[target_id]["cos"])) % 360
-					else:
-						filtered_x = raw_x
-						filtered_y = raw_y
-						filtered_rot = map_angle_deg
-						angle_buffers[target_id] = {
-							"sin": math.sin(math.radians(map_angle_deg)),
-							"cos": math.cos(math.radians(map_angle_deg))
-						}
+					filtered_rot_deg = math.degrees(filt_rot_rad) % 360.0
 
 					tracked_robots[target_id] = {
-						"x": round(filtered_x, 3),
-						"y": round(filtered_y, 3),
-						"rotation": round(filtered_rot, 2),
+						"x": round(filt_x, 3),
+						"y": round(filt_y, 3),
+						"rotation": round(filtered_rot_deg, 2),
 					}
 
-					# Package for output (Note: ROS orientation uses Radians)
-					robots_for_ros.append((robot_id, filtered_x, filtered_y, math.radians(filtered_rot)))
+					robots_for_ros.append((robot_id, filt_x, filt_y, filt_rot_rad))
 					robots_for_json.append({
 						"tag_id": target_id,
 						"robot_id": robot_id,
-						"x": round(filtered_x, 3),
-						"y": round(filtered_y, 3),
-						"rotation_deg": round(filtered_rot, 2),
+						"x": round(filt_x, 3),
+						"y": round(filt_y, 3),
+						"rotation_deg": round(filtered_rot_deg, 2),
 						"currently_visible": True
 					})
 
 					if args.show and target_id in frame_centers:
 						pixel = frame_centers[target_id].astype(int)
-						label = f"{robot_id} X:{filtered_x:.1f} Y:{filtered_y:.1f} R:{int(filtered_rot)}d"
+						label = f"{robot_id} X:{filt_x:.1f} Y:{filt_y:.1f} R:{int(filtered_rot_deg)}d"
 						cv2.putText(frame, label, (pixel[0], pixel[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 122, 0), 2)
 
+			# Include dropped/lost tags based on memory
 			for tag_id, pos in tracked_robots.items():
 				if tag_id not in frame_poses:
 					robot_id = node.target_tag_map.get(tag_id, f"robot_tag_{tag_id}")
@@ -419,7 +420,7 @@ def main():
 
 			if args.show:
 				if not map_calibrated:
-					cv2.putText(frame, "Calibration Targets Lost", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+					cv2.putText(frame, "Awaiting Grid Matrix Targets...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 				try:
 					cv2.imshow("AprilTag ROS 3D Pose Tracker", frame)
 					if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -428,9 +429,8 @@ def main():
 					pass
 
 			output_frame = frame.copy()
-
 			rclpy.spin_once(node, timeout_sec=0.0)
-			time.sleep(0.05)
+			time.sleep(0.01)  # Low loop sleep allows execution threads to maximize throughput
 
 	finally:
 		cap.release()
