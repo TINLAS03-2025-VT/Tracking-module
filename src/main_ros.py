@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # Flask dependencies
-from flask import Flask, Response, render_html
+from flask import Flask, Response
 
 import rclpy
 from rclpy.node import Node
