@@ -43,7 +43,7 @@ def generate_frames():
             continue
 
         # Downscale the frame for the web view (e.g., to 640x480 or half size)
-        downscaled = cv2.resize(output_frame, (640, 480), interpolation=cv2.INTER_AREA)
+        downscaled = cv2.resize(output_frame, (1280, 720), interpolation=cv2.INTER_AREA)
 
         # Encode as JPEG
         ret, buffer = cv2.imencode('.jpg', downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -191,6 +191,12 @@ def main():
     scale_factor = 1.0
     theta_rad = 0.0
 
+    smoothed_R_ref0 = None
+    smoothed_scale_factor = 1.0
+    smoothed_theta_rad = 0.0
+    calibration_frames_tracked = 0
+    CALIBRATION_LOCK_THRESHOLD = 50
+
     print(json.dumps({
         "event": "ros_tracker_started",
         "camera_index": args.camera_index,
@@ -233,32 +239,57 @@ def main():
                     cv2.putText(frame, str(tag_id), center_int, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
             if args.reference_tag_0 in frame_poses and args.reference_tag_1 in frame_poses:
-                T_cam_ref0 = frame_poses[args.reference_tag_0]
-                T_cam_ref1 = frame_poses[args.reference_tag_1]
-                T_ref0_cam = np.linalg.inv(T_cam_ref0)
+                if calibration_frames_tracked < CALIBRATION_LOCK_THRESHOLD or CALIBRATION_LOCK_THRESHOLD == 0:
+                    T_cam_ref0 = frame_poses[args.reference_tag_0]
+                    T_cam_ref1 = frame_poses[args.reference_tag_1]
+                    T_ref0_cam = np.linalg.inv(T_cam_ref0)
 
-                p1_in_ref0 = T_ref0_cam @ np.append(T_cam_ref1[0:3, 3], 1.0)
-                v_ref0 = p1_in_ref0[0:3]
-                d_phys = np.linalg.norm(v_ref0)
+                    p1_in_ref0 = T_ref0_cam @ np.append(T_cam_ref1[0:3, 3], 1.0)
+                    v_ref0 = p1_in_ref0[0:3]
+                    d_phys = np.linalg.norm(v_ref0)
 
-                if d_phys > 0.001:
-                    n_ref0 = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-                    u_y_ref0= np.cross(n_ref0, v_ref0)
-                    u_y_norm = np.linalg.norm(u_y_ref0)
+                    if d_phys > 0.001:
+                        n_ref0 = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                        u_y_ref0= np.cross(n_ref0, v_ref0)
+                        u_y_norm = np.linalg.norm(u_y_ref0)
 
-                    if u_y_norm > 0.001:
-                        u_y_ref0 /= u_y_norm
-                        u_z_ref0 = np.cross(v_ref0, u_y_ref0)
-                        u_z_ref0 /= np.linalg.norm(u_z_ref0)
-                        u_x_ref0 = np.cross(u_y_ref0, u_z_ref0)
-                        u_x_ref0 /= np.linalg.norm(u_x_ref0)
+						if u_y_norm > 0.001:
+							u_y_ref0 /= u_y_norm
+							u_z_ref0 = np.cross(v_ref0, u_y_ref0)
+							u_z_ref0 /= np.linalg.norm(u_z_ref0)
+							u_x_ref0 = np.cross(u_y_ref0, u_z_ref0)
+							u_x_ref0 /= np.linalg.norm(u_x_ref0)
 
-                        R_ref0_to_stable = np.stack([u_x_ref0, u_y_ref0, u_z_ref0], axis=1)
+							raw_R = np.stack([u_x_ref0, u_y_ref0, u_z_ref0], axis=1)
+							raw_scale = math.hypot(args.scale_x, args.scale_y) / d_phys
+                            raw_theta = math.atan2(args.scale_y, args.scale_x)
 
-                        d_map = math.hypot(args.scale_x, args.scale_y)
-                        scale_factor = d_map / d_phys
-                        theta_rad = math.atan2(args.scale_y, args.scale_x)
-                        map_calibrated = True
+                            cal_alpha = 0.1
+
+                            if smoothed_R_ref0 is None:
+                                smoothed_R_ref0 = raw_R
+                                smoothed_scale_factor = raw_scale
+                                smoothed_theta_rad = raw_theta
+                            else:
+                                smoothed_R_ref0 = (cal_alpha * raw_R) + ((1.0 - cal_alpha) * smoothed_R_ref0)
+                                smoothed_scale_factor = (cal_alpha * raw_scale) + ((1.0 - cal_alpha) * smoothed_scale_factor)
+                                # Handle angle wrap-around safely
+                                smoothed_theta_rad = smoothed_theta_rad + cal_alpha * math.atan2(
+                                    math.sin(raw_theta - smoothed_theta_rad),
+                                    math.cos(raw_theta - smoothed_theta_rad)
+                                )
+
+                            U, _, Vt = np.linalg.svd(smoothed_R_ref0)
+                            R_ref0_to_stable = U @ Vt
+
+                            scale_factor = smoothed_scale_factor
+                            theta_rad = smoothed_theta_rad
+
+                            calibration_frames_tracked += 1
+                            map_calibrated = True
+
+                            if calibration_frames_tracked == CALIBRATION_LOCK_THRESHOLD:
+                                node.get_logger().info("🔑 Calibration matrix securely LOCKED and stabilized.")
 
             if args.show and map_calibrated and args.reference_tag_0 in frame_poses:
                 T_cam_ref0 = frame_poses[args.reference_tag_0]
