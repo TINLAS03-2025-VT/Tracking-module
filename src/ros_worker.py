@@ -28,7 +28,6 @@ class AprilTagRosTracker(Node):
         self.get_logger().info(f"Target tag map: {self.target_tag_map}")
 
     def update_robot_data(self, robots: List[Tuple[str, float, float, float]]):
-        """Thread-safe update of data from the main vision loop."""
         with self.data_lock:
             self.latest_robots = robots
 
@@ -40,7 +39,6 @@ class AprilTagRosTracker(Node):
         return self.individual_pubs[robot_id]
 
     def publish_latest_poses(self):
-        """Executed periodically by the main loop to publish the latest state."""
         with self.data_lock:
             robots = list(self.latest_robots)
 
@@ -66,5 +64,4 @@ class AprilTagRosTracker(Node):
             self.pose_array_pub.publish(pose_array)
 
 def spin_ros_node(node):
-    """Target function for spinning the ROS2 executor on a background thread."""
     rclpy.spin(node)
