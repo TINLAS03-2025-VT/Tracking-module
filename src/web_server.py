@@ -39,16 +39,15 @@ def generate_frames():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-def update_web_frame(color_frame):
+def update_web_frame(ready_frame):
     """
     Accepts an annotated frame, strips background color down to
     grayscale, but returns it as BGR format so existing color drawings
     pop brightly over a monochrome canvas.
     """
     global output_frame
-    if color_frame is not None:
-        gray_base = cv2.cvtColor(color_frame, cv2.COLOR_BGR2GRAY)
-        output_frame = cv2.cvtColor(gray_base, cv2.COLOR_GRAY2BGR)
+    if ready_frame is not None:
+        output_frame = ready_frame.copy()
 
 def run_flask(port=5000):
     app.run(host='0.0.0.0', port=port, threaded=True, use_reloader=False)

@@ -102,11 +102,11 @@ def main():
 
             # Work on frame detections
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            annotated_frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
             detections = detector.detect(gray)
 
             frame_poses = {}
             frame_centers = {}
-            annotated_frame = frame.copy() # Store annotations cleanly
 
             for det in detections:
                 tag_id = int(det["id"])
