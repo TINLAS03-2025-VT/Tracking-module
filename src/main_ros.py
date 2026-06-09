@@ -43,7 +43,7 @@ def generate_frames():
 			continue
 
 		# Downscale the frame for the web view (e.g., to 640x480 or half size)
-		downscaled = cv2.resize(output_frame, (1280, 720), interpolation=cv2.INTER_AREA)
+		downscaled = cv2.resize(output_frame, (640, 360), interpolation=cv2.INTER_AREA)
 
 		# Encode as JPEG
 		ret, buffer = cv2.imencode('.jpg', downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
