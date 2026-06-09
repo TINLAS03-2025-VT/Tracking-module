@@ -137,7 +137,7 @@ def main():
         raise RuntimeError(f"Could not open camera index {args.camera_index}")
 
     tracked_robots = {}
-    ref_tags = {args.reference_tag_0, args.reference_tag_1}
+    angle_buffers = {}
 
     map_calibrated = False
     R_ref0_to_stable = None
@@ -273,18 +273,25 @@ def main():
                     if target_id in tracked_robots:
                         old_x = tracked_robots[target_id]["x"]
                         old_y = tracked_robots[target_id]["y"]
-                        old_rot = tracked_robots[target_id]["rotation"]
 
                         filtered_x = (args.alpha * raw_x) + ((1 - args.alpha) * old_x)
                         filtered_y = (args.alpha * raw_y) + ((1 - args.alpha) * old_y)
 
-                        sin_sum = args.alpha * math.sin(math.radians(map_angle_deg)) + (1 - args.alpha) * math.sin(math.radians(old_rot))
-                        cos_sum = args.alpha * math.cos(math.radians(map_angle_deg)) + (1 - args.alpha) * math.cos(math.radians(old_rot))
-                        filtered_rot = math.degrees(math.atan2(sin_sum, cos_sum)) % 360
+                        current_sin = math.sin(math.radians(map_angle_deg))
+                        current_cos = math.cos(math.radians(map_angle_deg))
+
+                        angle_buffers[target_id]["sin"] = (args.alpha * current_sin) + ((1 - args.alpha) * angle_buffers[target_id]["sin"])
+                        angle_buffers[target_id]["cos"] = (args.alpha * current_cos) + ((1 - args.alpha) * angle_buffers[target_id]["cos"])
+
+                        filtered_rot = math.degrees(math.atan2(angle_buffers[target_id]["sin"], angle_buffers[target_id]["cos"])) % 360
                     else:
                         filtered_x = raw_x
                         filtered_y = raw_y
                         filtered_rot = map_angle_deg
+                        angle_buffers[target_id] = {
+                            "sin": math.sin(math.radians(map_angle_deg)),
+                            "cos": math.cos(math.radians(map_angle_deg))
+                        }
 
                     tracked_robots[target_id] = {
                         "x": round(filtered_x, 3),
