@@ -370,6 +370,8 @@ def main():
 					kf_bank[target_id].predict(dt)
 					filt_x, filt_y, filt_rot_rad = kf_bank[target_id].update(raw_x, raw_y, map_angle_rad)
 
+					py_filt_x = float(filt_x)
+					py_filt_y = float(filt_y)
 					filtered_rot_deg = math.degrees(filt_rot_rad) % 360.0
 
 					tracked_robots[target_id] = {
