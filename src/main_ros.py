@@ -96,7 +96,7 @@ class AprilTagRosTracker(Node):
         pose_array.header.stamp = self.get_clock().now().to_msg()
         pose_array.header.frame_id = "map"
 
-        for robot_id, x, y, theta in robots:
+        for robot_id, x, y, theta, target_id in robots:
             pose = Pose()
             pose.position.x = float(x)
             pose.position.y = float(y)
