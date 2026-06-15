@@ -91,7 +91,7 @@ class AprilTagRosTracker(Node):
             self.get_logger().info(f"Publishing individual pose to {topic}")
         return self.individual_pubs[robot_id]
 
-    def publish_poses(self, robots: List[Tuple[str, float, float, float]]):
+    def publish_poses(self, robots: List[Tuple[str, float, float, float, int]]):
         pose_array = PoseArray()
         pose_array.header.stamp = self.get_clock().now().to_msg()
         pose_array.header.frame_id = "map"
@@ -100,7 +100,7 @@ class AprilTagRosTracker(Node):
             pose = Pose()
             pose.position.x = float(x)
             pose.position.y = float(y)
-            pose.position.z = 0.0
+            pose.position.z = float(target_id)
             yaw_to_pose_orientation(pose, theta)
             pose_array.poses.append(pose)
 
@@ -293,7 +293,7 @@ def main():
                     }
 
                     # Package for output (Note: ROS orientation uses Radians)
-                    robots_for_ros.append((robot_id, filtered_x, filtered_y, math.radians(filtered_rot)))
+                    robots_for_ros.append((robot_id, filtered_x, filtered_y, math.radians(filtered_rot), target_id))
                     robots_for_json.append({
                         "tag_id": target_id,
                         "robot_id": robot_id,
