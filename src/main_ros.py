@@ -28,8 +28,8 @@ def parse_args():
     parser.add_argument("-s", "--show", action="store_true", help="show OpenCV debug window")
     parser.add_argument("-t", "--tag-size", type=float, default=float(os.getenv("TAG_SIZE", "0.025")), help="inner dimensions of the tags in meters (default: 0.025)")
     parser.add_argument("-p", "--camera-profile", default=os.getenv("CAMERA_PROFILE", "microsoft_cam"), choices=valid_profiles, help=f"camera calibration profile from defines.py. Available options: {profiles_str}")
-    parser.add_argument("-x", "--scale-x", type=float, default=float(os.getenv("SCALE_X", "200")), help="x-axis scale to map the locations to (default: 200.0)")
-    parser.add_argument("-y", "--scale-y", type=float, default=float(os.getenv("SCALE_Y", "200")), help="y-axis scale to map the locations to (default: 200.0)")
+    parser.add_argument("--ref0-pos", default=os.getenv("REF0_POS", "0.0,0.0"), help="Map coordinate of reference tag 0 as 'x,y' (default: 0.0,0.0)")
+    parser.add_argument("--ref1-pos", default=os.getenv("REF1_POS", "200.0,200.0"), help="Map coordinate of reference tag 1 as 'x,y' (default: 200.0,200.0)")
     parser.add_argument("-0", "--reference-tag-0", type=int, default=int(os.getenv("REFERENCE_TAG_0", "0")), help="tag ID for reference tag at location {x: 0, y: 0} (default: 0)")
     parser.add_argument("-1", "--reference-tag-1", type=int, default=int(os.getenv("REFERENCE_TAG_1", "1")), help="tag ID for reference tag at location {x: SCALE_X, y: SCALE_Y} (default: 1)")
     parser.add_argument("-a", "--alpha", type=float, default=float(os.getenv("TRACKER_ALPHA", "0.3")), help="weight alpha for exponential moving average (default: 0.3)")
@@ -37,6 +37,13 @@ def parse_args():
     parser.add_argument("--output-topic", default=os.getenv("OUTPUT_TOPIC", "/robots/pos"), help="ROS 2 topic for aggregate poses")
     parser.add_argument("--publish-individual-poses", default=os.getenv("PUBLISH_INDIVIDUAL_POSES", "true").lower() == "true", action=argparse.BooleanOptionalAction, help="Publish independent PoseStamped topics for each robot")
     return parser.parse_args()
+
+def parse_coordinate(coord_str: str) -> Tuple[float, float]:
+    try:
+        parts = coord_str.split(",")
+        return float(parts[0].strip()), float(parts[1].strip())
+    except Exception as e:
+        raise ValueError(f"Failed to parse coordinate '{coord_str}'. Expected format 'x,y'. Error: {e}")
 
 def parse_target_tags(raw: str) -> Dict[int, str]:
     result = {}
@@ -118,6 +125,14 @@ def main():
     cam_cal = get_camera_calibration(args.camera_profile)
     fx, fy, cx, cy = cam_cal["fx"], cam_cal["fy"], cam_cal["cx"], cam_cal["cy"]
 
+    ref0_x, ref0_y = parse_coordinate(args.ref0_pos)
+    ref1_x, ref1_y = parse_coordinate(args.ref1_pos)
+
+    delta_map_x = ref1_x - ref0_x
+    delta_map_y = ref1_y - ref0_y
+    d_map = math.hypot(delta_map_x, delta_map_y)
+    theta_map_base = math.atan2(delta_map_y, delta_map_x)
+
     rclpy.init()
     node = AprilTagRosTracker(args)
 
@@ -142,15 +157,14 @@ def main():
     map_calibrated = False
     R_ref0_to_stable = None
     scale_factor = 1.0
-    theta_rad = 0.0
 
     print(json.dumps({
         "event": "ros_tracker_started",
         "camera_index": args.camera_index,
         "camera_profile": args.camera_profile,
         "reference_tags": [args.reference_tag_0, args.reference_tag_1],
+        "reference_positions": {"ref0": [ref0_x, ref0_y], "ref1": [ref1_x, ref1_y]},
         "target_tag_map": node.target_tag_map,
-        "scale": [args.scale_x, args.scale_y],
         "output_topic": args.output_topic,
         "publish_individual_poses": args.publish_individual_poses,
         "show": args.show,
@@ -207,23 +221,23 @@ def main():
                         u_x_ref0 /= np.linalg.norm(u_x_ref0)
 
                         R_ref0_to_stable = np.stack([u_x_ref0, u_y_ref0, u_z_ref0], axis=1)
-
-                        d_map = math.hypot(args.scale_x, args.scale_y)
                         scale_factor = d_map / d_phys
-                        theta_rad = math.atan2(args.scale_y, args.scale_x)
                         map_calibrated = True
 
             if args.show and map_calibrated and args.reference_tag_0 in frame_poses:
                 T_cam_ref0 = frame_poses[args.reference_tag_0]
-                cos_t = math.cos(theta_rad)
-                sin_t = math.sin(theta_rad)
-                map_corners = [(0, 0), (args.scale_x, 0), (args.scale_x, args.scale_y), (0, args.scale_y)]
+                cos_t = math.cos(theta_map_base)
+                sin_t = math.sin(theta_map_base)
+                map_corners = [(ref0_x, ref0_y), (ref1_x, ref0_y), (ref1_x, ref1_y), (ref0_x, ref1_y)]
                 field_corners_3d = []
                 inv_s = 1.0 / scale_factor
 
                 for mx, my in map_corners:
-                    xf = inv_s * (mx * cos_t + my * sin_t)
-                    yf = inv_s * (-mx * sin_t + my * cos_t)
+                    mx_rel = mx - ref0_x
+                    my_rel = my - ref0_y
+
+                    xf = inv_s * (mx_rel * cos_t + my_rel * sin_t)
+                    yf = inv_s * (-mx_rel * sin_t + my_rel * cos_t)
                     v_stable = np.array([xf, yf, 0.0], dtype=np.float32)
                     v_ref0 = R_ref0_to_stable @ v_stable
                     p_cam = T_cam_ref0 @ np.append(v_ref0, 1.0)
@@ -243,8 +257,8 @@ def main():
             if map_calibrated and args.reference_tag_0 in frame_poses:
                 T_cam_ref0 = frame_poses[args.reference_tag_0]
                 T_ref0_cam = np.linalg.inv(T_cam_ref0)
-                cos_t = math.cos(theta_rad)
-                sin_t = math.sin(theta_rad)
+                cos_t = math.cos(theta_map_base)
+                sin_t = math.sin(theta_map_base)
 
                 for target_id, robot_id in node.target_tag_map.items():
                     if target_id not in frame_poses:
@@ -255,8 +269,8 @@ def main():
                     v_target_stable = R_ref0_to_stable.T @ p_target_in_ref0[0:3]
                     x_floor, y_floor = v_target_stable[0], v_target_stable[1]
 
-                    raw_x = scale_factor * (x_floor * cos_t - y_floor * sin_t)
-                    raw_y = scale_factor * (x_floor * sin_t + y_floor * cos_t)
+                    raw_x = ref0_x + scale_factor * (x_floor * cos_t - y_floor * sin_t)
+                    raw_y = ref0_y + scale_factor * (x_floor * sin_t + y_floor * cos_t)
 
                     T_ref0_target = T_ref0_cam @ T_cam_target
                     R_stable_target = R_ref0_to_stable.T @ T_ref0_target[0:3, 0:3]
