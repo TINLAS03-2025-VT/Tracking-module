@@ -1,163 +1,264 @@
 import argparse
-import json
-import math
 import os
 import time
 from threading import Thread
+
 import cv2
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+import defines
+from locator import Locator
 
 import rclpy
-import defines
 from ros_worker import AprilTagRosTracker, spin_ros_node
-from web_server import run_flask, update_web_frame
-from tracker_engine import AprilTagTrackerEngine
+
+import multiprocessing as mp
+from stream_server import start_stream_server
 
 def parse_args():
-    valid_profiles = [
-        attr for attr in dir(defines)
-        if not attr.startswith("__") and not hasattr(getattr(defines, attr), "__call__")
-    ]
-    profiles_str = ", ".join(valid_profiles) if valid_profiles else "none found"
+	valid_profiles = [
+		attr for attr in dir(defines)
+		if not attr.startswith("__") and not hasattr(getattr(defines, attr), "__call__")
+	]
+	profiles_str = ", ".join(valid_profiles) if valid_profiles else "none found"
 
-    parser = argparse.ArgumentParser(description="Modular AprilTag Tracker")
-    parser.add_argument("-c", "--camera-index", type=int, default=int(os.getenv("CAMERA_INDEX", "0")))
-    parser.add_argument("-s", "--show", action="store_true", help="Show local debug window")
-    parser.add_argument("-t", "--tag-size", type=float, default=float(os.getenv("TAG_SIZE", "0.025")))
-    parser.add_argument("-p", "--camera-profile", default=os.getenv("CAMERA_PROFILE", "microsoft_cam"), choices=valid_profiles)
-    parser.add_argument("-x", "--scale-x", type=float, default=float(os.getenv("SCALE_X", "200")))
-    parser.add_argument("-y", "--scale-y", type=float, default=float(os.getenv("SCALE_Y", "200")))
-    parser.add_argument("-0", "--reference-tag-0", type=int, default=int(os.getenv("REFERENCE_TAG_0", "0")))
-    parser.add_argument("-1", "--reference-tag-1", type=int, default=int(os.getenv("REFERENCE_TAG_1", "1")))
-    parser.add_argument("-a", "--alpha", type=float, default=float(os.getenv("TRACKER_ALPHA", "0.3")))
-    parser.add_argument("--target-tags", default=os.getenv("TARGET_TAGS", "2:robot_1,3:robot_2"))
-    parser.add_argument("--output-topic", default=os.getenv("OUTPUT_TOPIC", "/robots/pos"))
-    parser.add_argument("--publish-individual-poses", default=os.getenv("PUBLISH_INDIVIDUAL_POSES", "true").lower() == "true", action=argparse.BooleanOptionalAction)
-    return parser.parse_args()
+	parser = argparse.ArgumentParser(description="Modular AprilTag Tracker")
+	parser.add_argument("-c", "--camera-index", type=int, default=int(os.getenv("CAMERA_INDEX", "0")))
+	parser.add_argument("-s", "--show", action="store_true", help="Show local debug window")
+	parser.add_argument("-t", "--tag-size", type=float, default=float(os.getenv("TAG_SIZE", "0.025")))
+	parser.add_argument("-p", "--camera-profile", default=os.getenv("CAMERA_PROFILE", "microsoft_cam"), choices=valid_profiles)
+	parser.add_argument("--t0x", type=float, default=float(os.getenv("T0X", "0.0")))
+	parser.add_argument("--t0y", type=float, default=float(os.getenv("T0Y", "0.0")))
+	parser.add_argument("--t1x", type=float, default=float(os.getenv("T1X", "200.0")))
+	parser.add_argument("--t1y", type=float, default=float(os.getenv("T1Y", "200.0")))
+	parser.add_argument("-0", "--reference-tag-0", type=int, default=int(os.getenv("REFERENCE_TAG_0", "0")))
+	parser.add_argument("-1", "--reference-tag-1", type=int, default=int(os.getenv("REFERENCE_TAG_1", "1")))
+	parser.add_argument("--target-tags", default=os.getenv("TARGET_TAGS", "2:robot_1,3:robot_2,4:robot_3,5:robot_4"))
+	parser.add_argument("--output-topic", default=os.getenv("OUTPUT_TOPIC", "/cam/pos"))
+	parser.add_argument("--publish-individual", action="store_true", help="Publish standalone PoseStamped topics for each robot")
+	return parser.parse_args()
 
 def parse_target_tags(raw: str) -> dict:
-    result = {}
-    for index, item in enumerate(raw.split(","), start=1):
-        item = item.strip()
-        if not item: continue
-        if ":" in item:
-            tag_str, robot_id = item.split(":", 1)
-            result[int(tag_str.strip())] = robot_id.strip()
-        else:
-            result[int(item)] = f"robot_{index}"
-    return result
+	result = {}
+	for index, item in enumerate(raw.split(","), start=1):
+		item = item.strip()
+		if not item: continue
+		if ":" in item:
+			tag_str, robot_id = item.split(":", 1)
+			result[int(tag_str.strip())] = robot_id.strip()
+		else:
+			result[int(item)] = f"robot_{index}"
+	return result
 
 def main():
-    args = parse_args()
-    cam_cal = getattr(defines, args.camera_profile)
+	# Parse arguments and environment variables from start command
+	args = parse_args()
+	target_tag_map = parse_target_tags(args.target_tags)
 
-    # Initialize Core Tracking Components
-    engine = AprilTagTrackerEngine(
-        args.tag_size, args.alpha, args.scale_x, args.scale_y,
-        args.reference_tag_0, args.reference_tag_1,
-        cam_cal["fx"], cam_cal["fy"], cam_cal["cx"], cam_cal["cy"]
-    )
+	rclpy.init()
+	ros_node = AprilTagRosTracker(
+		output_topic=args.output_topic,
+		publish_individual=args.publish_individual,
+		target_tag_map=target_tag_map,
+	)
 
-    # Initialize ROS2 Engine Thread
-    rclpy.init()
-    target_tag_map = parse_target_tags(args.target_tags)
-    ros_node = AprilTagRosTracker(args.output_topic, args.publish_individual_poses, target_tag_map)
-    Thread(target=spin_ros_node, args=(ros_node,), daemon=True).start()
+	ros_thread = Thread(target=spin_ros_node, args=(ros_node,), daemon=True)
+	ros_thread.start()
 
-    # Initialize Web App Thread
-    Thread(target=run_flask, daemon=True).start()
+	web_queue = None
+	if args.show:
+		ctx = mp.get_context("spawn")
+		web_queue = ctx.Queue(maxsize=2)
 
-    cap = cv2.VideoCapture(args.camera_index)
-    if not cap.isOpened():
-        ros_node.get_logger().error(f"Could not open camera index {args.camera_index}")
-        return
+		web_process = ctx.Process(
+			target=start_stream_server,
+			args=(web_queue, "0.0.0.0", 8080),
+			daemon=True
+		)
+		web_process.start()
+		print("Web UI broadcast cleanly isolated at http://localhost:8080")
 
-    print(json.dumps({"event": "tracker_running", "target_tag_map": target_tag_map}), flush=True)
+	# Open video stream
+	cap = cv2.VideoCapture(args.camera_index)
 
-    try:
-        while rclpy.ok():
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.2)
-                continue
+	cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 
-            # Convert frame to Grayscale, then construct colored canvas over top
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            annotated_frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+	if not cap.isOpened():
+		print("Error: Could not open camera {args.camera_index}.")
+		ros_node.destroy_node()
+		rclpy.shutdown()
+		return
 
-            # Process tracking steps via extracted engine module
-            detections, frame_poses, frame_centers = engine.process_frame(gray)
-            engine.compute_calibration(frame_poses, logger=ros_node.get_logger())
+	# Create locator for locating AprilTags
+	locator = Locator(
+		cam_cal=getattr(defines, args.camera_profile),
+		tag_size=args.tag_size
+	)
 
-            # Draw Detections in Color
-            for det in detections:
-                tag_id = int(det["id"])
-                if tag_id in frame_centers:
-                    corners = np.array(det["lb-rb-rt-lt"], dtype=np.int32)
-                    center_int = tuple(frame_centers[tag_id].astype(int))
-                    cv2.polylines(annotated_frame, [corners], True, (0, 255, 0), 2)
-                    cv2.circle(annotated_frame, center_int, 5, (0, 0, 255), -1)
-                    cv2.putText(annotated_frame, str(tag_id), center_int, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+	# For saving mapping plane data
+	avg_unit_normal_vector = None
 
-            # Draw Ground Map Plane Grid Line
-            grid_pts = engine.get_field_grid_points(frame_poses)
-            if grid_pts is not None:
-                cv2.polylines(annotated_frame, [grid_pts], True, (255, 0, 255), 2)
-                cv2.putText(annotated_frame, "Field Plane Grid", tuple(grid_pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+	print("Tracking active. Press 'q' in the debug window to exit.")
+	try:
+		while True:
+			# Get a frame
+			ret, frame = cap.read()
+			if not ret:
+				print("Error: Failed to get frame.")
+				break
 
-            robots_for_ros = []
-            robots_for_json = []
+			# Convert to grayscale and get the detected tags with estimated positions
+			gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+			detections = locator.detect(gray)
+			poses = locator.get_poses(detections)
 
-            # Compute actual positions
-            for target_id, robot_id in ros_node.target_tag_map.items():
-                loc = engine.localize_target(target_id, frame_poses)
-                if loc is not None:
-                    fx_m, fy_m, frot_deg = loc
-                    robots_for_ros.append((robot_id, fx_m, fy_m, math.radians(frot_deg)))
-                    robots_for_json.append({
-                        "tag_id": target_id, "robot_id": robot_id, "x": round(fx_m, 3), "y": round(fy_m, 3),
-                        "rotation_deg": round(frot_deg, 2), "currently_visible": True
-                    })
+			# Show the detected tags in an image for debugging purposes
+			if args.show:
+				for detection in detections:
+					tag_id = detection["id"]
+					tag_corners = np.array(detection["lb-rb-rt-lt"], dtype=np.int32)
+					tag_center = tuple((np.array(detection["center"], dtype=np.float32)).astype(int))
 
-                    if target_id in frame_centers:
-                        pixel = frame_centers[target_id].astype(int)
-                        label = f"{robot_id} X:{fx_m:.1f} Y:{fy_m:.1f} R:{int(frot_deg)}d"
-                        cv2.putText(annotated_frame, label, (pixel[0], pixel[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 122, 0), 2)
+					cv2.polylines(frame, [tag_corners], True, (0, 255, 0), 2)
+					cv2.circle(frame, tag_center, 5, (0, 0, 255), -1)
+					cv2.putText(frame, str(tag_id), tag_center, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
-            # Add missing historical context metrics to json outputs
-            for tag_id, pos in engine.tracked_robots.items():
-                if tag_id not in frame_poses:
-                    r_id = ros_node.target_tag_map.get(tag_id, f"robot_tag_{tag_id}")
-                    robots_for_json.append({
-                        "tag_id": tag_id, "robot_id": r_id, "x": pos["x"], "y": pos["y"],
-                        "rotation_deg": pos["rotation"], "currently_visible": False
-                    })
+				frame_downscaled = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
 
-            # Send state sync signals down pipeline pipelines
-            ros_node.update_robot_data(robots_for_ros)
-            ros_node.publish_latest_poses()
+				if web_queue is not None and not web_queue.full():
+					try:
+						web_queue.put_nowait(frame)
+					except Exception:
+						pass
 
-            print(json.dumps({
-                "event": "frame", "visible_tags": sorted(list(frame_centers.keys())),
-                "reference_visible": (args.reference_tag_0 in frame_poses and args.reference_tag_1 in frame_poses),
-                "map_calibrated": engine.map_calibrated, "robots": robots_for_json
-            }), flush=True)
+			# 1. Extract reference orientations and positions
+			normals = []
+			pylons = {}
 
-            if not engine.map_calibrated:
-                cv2.putText(annotated_frame, "Calibration Targets Lost", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+			for tag_id, pose_data in poses.items(): # Get the normals from the reference tags and one of their positions
+				if tag_id in (args.reference_tag_0, args.reference_tag_1):
+					normals.append(pose_data["R"][:, 2])
+					pylons[tag_id] = pose_data["t"]
 
-            if args.show:
-                cv2.imshow("AprilTag ROS 3D Pose Tracker", annotated_frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+			if normals:
+				# Align and average normals to get a stable ground normal
+				reference = normals[0]
+				aligned = [n if np.dot(reference, n) >= 0 else -n for n in normals]
+				current_avg = np.mean(aligned, axis=0)
+				current_avg /= np.linalg.norm(current_avg)
 
-            update_web_frame(annotated_frame)
-            time.sleep(0.05)
+				if avg_unit_normal_vector is not None:
+					if np.dot(avg_unit_normal_vector, current_avg) < 0:
+						current_avg = -current_avg
+				avg_unit_normal_vector = current_avg
 
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        ros_node.destroy_node()
-        rclpy.shutdown()
+			if avg_unit_normal_vector is None:
+				print("Looking for reference tags...")
+				time.sleep(0.01667)
+				continue
+
+			if args.reference_tag_0 in pylons and args.reference_tag_1 in pylons:
+				p0_cam = pylons[args.reference_tag_0]
+				p1_cam = pylons[args.reference_tag_1]
+
+				delta_p_cam = p1_cam - p0_cam
+
+				dx_field = args.t1x - args.t0x
+				dy_field = args.t1y - args.t0y
+
+				delta_p_plane = delta_p_cam - np.dot(delta_p_cam, avg_unit_normal_vector) * avg_unit_normal_vector
+
+				field_link_angle = np.arctan2(dx_field, dy_field) + np.pi
+
+				c, s = np.cos(-field_link_angle), np.sin(-field_link_angle)
+
+				u = avg_unit_normal_vector
+				R_rot = np.array([
+					[c + u[0]**2*(1-c),    u[0]*u[1]*(1-c) - u[2]*s, u[0]*u[2]*(1-c) + u[1]*s],
+					[u[1]*u[0]*(1-c) + u[2]*s, c + u[1]**2*(1-c),    u[1]*u[2]*(1-c) - u[0]*s],
+					[u[2]*u[0]*(1-c) - u[1]*s, u[2]*u[1]*(1-c) + u[0]*s, c + u[2]**2*(1-c)]
+				])
+
+				field_north_3d = R_rot @ delta_p_plane
+				field_north_3d /= np.linalg.norm(field_north_3d)
+
+				field_east_3d = np.cross(avg_unit_normal_vector, field_north_3d)
+				field_east_3d /= np.linalg.norm(field_east_3d)
+
+				pixel_dist = np.linalg.norm(delta_p_plane)
+				field_dist = np.sqrt(dx_field**2 + dy_field**2)
+				scale_units_per_meter = field_dist / pixel_dist
+
+				field_up_3d = -avg_unit_normal_vector
+
+				R_field_raw = np.column_stack((field_east_3d, field_north_3d, field_up_3d))
+
+				if 'R_field' not in locals():
+					R_field = R_field_raw
+				else:
+					R_field = 0.05 * R_field_raw + 0.95 * R_field
+					u_f, _, vh_f = np.linalg.svd(R_field)
+					R_field = np.dot(u_f, vh_f)
+			else:
+				print("System initializing: Please ensure both reference tags are visible.")
+				time.sleep(0.01667)
+				continue
+
+			if 'R_field' not in locals():
+				print("System initializing: Please ensure both reference tags are visible.")
+				time.sleep(0.01667)
+				continue
+
+			for tag_id, pose_data in poses.items():
+				if tag_id not in (args.reference_tag_0, args.reference_tag_1):
+					# Project the point to the plane
+					t_target_cam = pose_data["t"]
+					R_target_cam = pose_data["R"]
+
+					v_floor_to_tag = t_target_cam - pylons[args.reference_tag_0]
+
+					live_height_meters = np.dot(v_floor_to_tag, avg_unit_normal_vector)
+
+					corrected_pos_cam = t_target_cam - (live_height_meters * avg_unit_normal_vector)
+
+					v_target_ground_cam = corrected_pos_cam - pylons[args.reference_tag_0]
+
+					pos_x_meters = np.dot(v_target_ground_cam, R_field[:, 0])
+					pos_y_meters = np.dot(v_target_ground_cam, R_field[:, 1])
+
+					final_field_x = args.t0x + (pos_x_meters * scale_units_per_meter)
+					final_field_y = args.t0y + (pos_y_meters * scale_units_per_meter)
+
+					R_relative = R_field.T @ R_target_cam
+
+					u, _, vh = np.linalg.svd(R_relative)
+					R_orthogonal = np.dot(u, vh)
+
+					if np.linalg.det(R_orthogonal) < 0:
+						u[:, 2] *= -1
+						R_orthogonal = np.dot(u, vh)
+
+					relative_rotation = Rotation.from_matrix(R_orthogonal)
+					quaternion_field = relative_rotation.as_quat()
+
+					tag_forward_in_field = R_orthogonal[:, 1]
+					angle_degrees = np.degrees(np.arctan2(tag_forward_in_field[0], tag_forward_in_field[1])) % 360.0
+
+					print(f"Chariot {tag_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Live Height: {live_height_meters * 100:.1f}cm | Heading: {angle_degrees:.2f}° | Quat: {quaternion_field}")
+
+			time.sleep(0.01667)
+
+	except KeyboardInterrupt:
+		print("\nShutting down pipeline components...")
+
+	finally:
+		cap.release()
+		cv2.destroyAllWindows()
+		ros_node.destroy_node()
+		rclpy.shutdown()
 
 if __name__ == "__main__":
-    main()
+	main()
+
+

@@ -1,4 +1,7 @@
 apriltag-python
 opencv-python-headless
 numpy
-flask
+scipy
+
+fastapi
+uvicorn
