@@ -1,4 +1,5 @@
 import math
+import re
 from threading import Lock
 from typing import List, Tuple
 import rclpy
@@ -50,7 +51,13 @@ class AprilTagRosTracker(Node):
             pose = Pose()
             pose.position.x = float(x)
             pose.position.y = float(y)
-            pose.position.z = 0.0
+
+            match = re.search(r'\d+', robot_id)
+            if match:
+                pose.position.z = float(match.group())
+            else:
+                pose.position.z = 0.0
+
             yaw_to_pose_orientation(pose, theta)
             pose_array.poses.append(pose)
 

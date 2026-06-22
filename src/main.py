@@ -256,10 +256,12 @@ def main():
 					theta_rad = np.arctan2(tag_forward_in_field[0], tag_forward_in_field[1]) + np.pi # rotate 180 degrees for up to be 0 degrees
 					angle_degrees = np.degrees(theta_rad) % 360.0
 
-					print(f"Chariot {tag_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Heading: {angle_degrees:.2f}°")
-
 					robot_id = target_tag_map[tag_id]
 					current_frame_robots.append((robot_id, final_field_x, final_field_y, theta_rad))
+
+					print(f"Chariot tag = {tag_id}, id {robot_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Heading: {angle_degrees:.2f}°")
+
+
 
 			ros_node.update_robot_data(current_frame_robots)
 			ros_node.publish_latest_poses()
