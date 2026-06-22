@@ -250,7 +250,7 @@ def main():
 						R_orthogonal = np.dot(u, vh)
 
 					tag_forward_in_field = R_orthogonal[:, 1]
-					theta_rad = np.arctan2(tag_forward_in_field[1], tag_forward_in_field[0])
+					theta_rad = np.arctan2(-tag_forward_in_field[1], -tag_forward_in_field[0])
 					angle_degrees = np.degrees(theta_rad)
 
 					robot_id = target_tag_map[tag_id]
