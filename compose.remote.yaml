@@ -18,7 +18,7 @@ services:
       - /lib/modules:/lib/modules:ro
 
   tracker:
-    build: ./
+    image: ghcr.io/tinlas03-2025-vt/tracking-module:latest
     container_name: tracking-module
     restart: unless-stopped
     network_mode: service:wireguard-client
