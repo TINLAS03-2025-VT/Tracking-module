@@ -42,7 +42,6 @@ services:
       - T1X=10.3
       - T1Y=10.3
       - OUTPUT_TOPIC=/cam/pos
-      - PUBLISH_INDIVIDUAL_POSES=false
     devices:
       - /dev/video5:/dev/video0
       - /dev/dri:/dev/dri

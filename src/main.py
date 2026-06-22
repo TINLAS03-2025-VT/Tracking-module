@@ -169,7 +169,7 @@ def main():
 
 				delta_p_plane = delta_p_cam - np.dot(delta_p_cam, avg_unit_normal_vector) * avg_unit_normal_vector
 
-				field_link_angle = np.arctan2(dx_field, dy_field) + np.pi
+				field_link_angle = np.arctan2(dx_field, dy_field)
 
 				c, s = np.cos(-field_link_angle), np.sin(-field_link_angle)
 
@@ -200,6 +200,11 @@ def main():
 					R_field = 0.05 * R_field_raw + 0.95 * R_field
 					u_f, _, vh_f = np.linalg.svd(R_field)
 					R_field = np.dot(u_f, vh_f)
+
+					if np.linalg.det(R_field) < 0:
+						u_f[:, 2] *= -1
+						R_field = np.dot(u_f, vh_f)
+
 			else:
 				print("System initializing: Please ensure both reference tags are visible.")
 				time.sleep(0.01667)
@@ -210,8 +215,13 @@ def main():
 				time.sleep(0.01667)
 				continue
 
+			current_frame_robots = []
+
 			for tag_id, pose_data in poses.items():
 				if tag_id not in (args.reference_tag_0, args.reference_tag_1):
+					if tag_id not in target_tag_map:
+						continue  # Skip unmapped tags safely
+
 					# Project the point to the plane
 					t_target_cam = pose_data["t"]
 					R_target_cam = pose_data["R"]
@@ -243,9 +253,16 @@ def main():
 					quaternion_field = relative_rotation.as_quat()
 
 					tag_forward_in_field = R_orthogonal[:, 1]
-					angle_degrees = np.degrees(np.arctan2(tag_forward_in_field[0], tag_forward_in_field[1])) % 360.0
+					theta_rad = np.arctan2(tag_forward_in_field[0], tag_forward_in_field[1]) + np.pi # rotate 180 degrees for up to be 0 degrees
+					angle_degrees = np.degrees(theta_rad) % 360.0
 
-					print(f"Chariot {tag_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Live Height: {live_height_meters * 100:.1f}cm | Heading: {angle_degrees:.2f}° | Quat: {quaternion_field}")
+					print(f"Chariot {tag_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Heading: {angle_degrees:.2f}°")
+
+					robot_id = target_tag_map[tag_id]
+					current_frame_robots.append((robot_id, final_field_x, final_field_y, theta_rad))
+
+			ros_node.update_robot_data(current_frame_robots)
+			ros_node.publish_latest_poses()
 
 			time.sleep(0.01667)
 
