@@ -249,12 +249,9 @@ def main():
 						u[:, 2] *= -1
 						R_orthogonal = np.dot(u, vh)
 
-					relative_rotation = Rotation.from_matrix(R_orthogonal)
-					quaternion_field = relative_rotation.as_quat()
-
 					tag_forward_in_field = R_orthogonal[:, 1]
-					theta_rad = np.arctan2(tag_forward_in_field[0], tag_forward_in_field[1]) + np.pi # rotate 180 degrees for up to be 0 degrees
-					angle_degrees = np.degrees(theta_rad) % 360.0
+					theta_rad = np.arctan2(tag_forward_in_field[1], tag_forward_in_field[0])
+					angle_degrees = np.degrees(theta_rad)
 
 					robot_id = target_tag_map[tag_id]
 					current_frame_robots.append((robot_id, final_field_x, final_field_y, theta_rad))

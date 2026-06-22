@@ -36,7 +36,7 @@ services:
       - CAMERA_PROFILE=sotp_cam
       - REFERENCE_TAG_0=0
       - REFERENCE_TAG_1=1
-      - TARGET_TAGS=2:robot_1,3:robot_2,4:robot_3,5:robot_4
+      - TARGET_TAGS=2:robot_2,3:robot_3,4:robot_4,5:robot_5
       - T0X=-0.3
       - T0Y=-0.3
       - T1X=10.3
