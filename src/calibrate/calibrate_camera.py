@@ -50,7 +50,7 @@ def main():
     print("Starting video capture. Move the chessboard around in front of the camera.")
     print("Capturing will run for 30 seconds. Press 'q' to stop early.")
 
-    duration = 30
+    duration = 60
     start_time = time.time()
     last_sample_time = 0
 
@@ -107,22 +107,16 @@ def main():
 
     print("\nCalibrating camera matrix based on {} frames...".format(len(ipoints)))
 
-    flags = (cv2.CALIB_ZERO_TANGENT_DIST |
-             cv2.CALIB_FIX_K1 |
-             cv2.CALIB_FIX_K2 |
-             cv2.CALIB_FIX_K3 |
-             cv2.CALIB_FIX_K4 |
-             cv2.CALIB_FIX_K5 |
-             cv2.CALIB_FIX_K6)
+    flags = 0
 
     retval, K, dcoeffs, rvecs, tvecs = cv2.calibrateCamera(
         opoints, ipoints, imagesize,
         cameraMatrix=None,
-        distCoeffs=np.zeros(5),
+        distCoeffs=None,
         flags=flags
     )
 
-    assert(np.all(dcoeffs == 0))
+    dist_flat = dcoeffs.ravel()
 
     fx = K[0,0]
     fy = K[1,1]
@@ -131,6 +125,8 @@ def main():
 
     params = (fx, fy, cx, cy)
 
+    k1, k2, p1, p2, k3 = dist_flat[:5]
+
     print()
     print('all units below measured in pixels:')
     print('  fx = {}'.format(fx))
@@ -138,8 +134,25 @@ def main():
     print('  cx = {}'.format(cx))
     print('  cy = {}'.format(cy))
     print()
-    print('pastable into Python:')
-    print('  fx, fy, cx, cy = {}'.format(repr(params)))
+    print('Lens distortion coefficients:')
+    print('  k1 = {}'.format(k1))
+    print('  k2 = {}'.format(k2))
+    print('  p1 = {}'.format(p1))
+    print('  p2 = {}'.format(p2))
+    print('  k3 = {}'.format(k3))
+    print()
+    print('Pastable profile dictionary for your tracking application:')
+    print("""cam_cal = {{
+    "fx": {},
+    "fy": {},
+    "cx": {},
+    "cy": {},
+    "k1": {},
+    "k2": {},
+    "p1": {},
+    "p2": {},
+    "k3": {}
+}}""".format(fx, fy, cx, cy, k1, k2, p1, p2, k3))
     print()
 
 if __name__ == '__main__':
