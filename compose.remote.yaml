@@ -7,7 +7,7 @@ services:
       - NET_ADMIN
       - SYS_MODULE
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
       - "5000:5000"
     environment:
       - PUID=0
@@ -19,6 +19,7 @@ services:
 
   tracker:
     image: ghcr.io/tinlas03-2025-vt/tracking-module:latest
+    # build: ./ # For testing
     container_name: tracking-module
     restart: unless-stopped
     network_mode: service:wireguard-client

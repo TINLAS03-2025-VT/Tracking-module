@@ -3,27 +3,37 @@ import numpy as np
 import cv2
 import argparse
 import time
+import json
+
+def board_moved_significantly(last_corners, current_corners, threshold=40.0):
+    """Ensures we only capture frames when the board actually moves."""
+    if last_corners is None:
+        return True
+
+    # Calculate the mean center of the chessboard for both frames
+    last_center = np.mean(last_corners, axis=0)[0]
+    curr_center = np.mean(current_corners, axis=0)[0]
+
+    # Calculate Euclidean distance between the centers
+    dist = np.linalg.norm(curr_center - last_center)
+    return dist > threshold
 
 def main():
 
     parser = argparse.ArgumentParser(
-        description='calibrate camera intrinsics using OpenCV via live video stream')
-
+        description='Calibrate camera intrinsics using OpenCV via live video stream')
     parser.add_argument('-i', '--camera-index', type=int, default=0,
                         help='Index of the camera to use (default: 0)')
-
-    parser.add_argument('-r', '--rows', metavar='N', type=int,
-                        required=True,
+    parser.add_argument('-r', '--rows', metavar='N', type=int, required=True,
                         help='# of chessboard corners in vertical direction')
-
-    parser.add_argument('-c', '--cols', metavar='N', type=int,
-                        required=True,
+    parser.add_argument('-c', '--cols', metavar='N', type=int, required=True,
                         help='# of chessboard corners in horizontal direction')
-
     parser.add_argument('-s', '--size', metavar='NUM', type=float, default=1.0,
-                        help='chessboard square size in user-chosen units (should not affect results)')
-
-    parser.add_argument('-t', '--time', metavar='N', type=int, default=30, help='time the calibration runs for')
+                        help='chessboard square size in user-chosen units')
+    parser.add_argument('-t', '--time', metavar='N', type=int, default=30,
+                        help='time the calibration runs for')
+    parser.add_argument('-o', '--output', type=str, default='camera_calib.json',
+                        help='Output JSON file to save calibration data')
 
     options = parser.parse_args()
 
@@ -34,17 +44,17 @@ def main():
 
     x = np.arange(patternsize[0]) * sz
     y = np.arange(patternsize[1]) * sz
-
     xgrid, ygrid = np.meshgrid(x, y)
     zgrid = np.zeros_like(xgrid)
     opoints_single = np.dstack((xgrid, ygrid, zgrid)).reshape((-1, 3)).astype(np.float32)
 
     imagesize = None
-    win = 'Calibrate - Live Stream'
+    win = 'Calibrate - Live Stream (Vary distance and angles!)'
     cv2.namedWindow(win)
 
     ipoints = []
     opoints = []
+    last_saved_corners = None
 
     cap = cv2.VideoCapture(options.camera_index)
     if not cap.isOpened():
@@ -75,10 +85,7 @@ def main():
         if imagesize is None:
             imagesize = (rgb.shape[1], rgb.shape[0])
 
-        if len(rgb.shape) == 3:
-            gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = rgb
+        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY) if len(rgb.shape) == 3 else rgb
 
         retval, corners = cv2.findChessboardCorners(gray, patternsize, None)
         display = rgb.copy()
@@ -88,68 +95,76 @@ def main():
 
             current_time = time.time()
             if current_time - last_sample_time > 0.5:
-                corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term_criteria)
+                if board_moved_significantly(last_saved_corners, corners):
+                    corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term_criteria)
 
-                ipoints.append(corners2)
-                opoints.append(opoints_single)
+                    ipoints.append(corners2)
+                    opoints.append(opoints_single)
+                    last_saved_corners = corners2
+                    last_sample_time = current_time
 
-                last_sample_time = current_time
-                print("Saved screenshot {} | Remaining: {}s".format(len(ipoints), remaining_time))
+                    cv2.rectangle(display, (0,0), (display.shape[1], display.shape[0]), (0, 255, 0), 10)
+                    print("Saved screenshot {} | Remaining: {}s".format(len(ipoints), remaining_time))
+                else:
+                    cv2.putText(display, "MOVE BOARD MORE", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+        else:
+            print("Failed to find chessboard.")
+            time.sleep(0.005)
 
         cv2.putText(display, "Time Left: {}s".format(remaining_time), (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(display, "Snapshots: {}".format(len(ipoints)), (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         cv2.imshow(win, display)
-
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("\nStopped early by user. Starting calibration...")
             break
 
     cv2.destroyWindow(win)
 
-    if len(ipoints) < 3:
-        print("Error: Not enough chessboard patterns detected to perform calibration (Minimum 3 needed).")
+    if len(ipoints) < 10:
+        print(f"Error: Only {len(ipoints)} patterns detected. Minimum 10 needed for reliable calibration.")
         cap.release()
         return
 
-    print("\nCalibrating camera matrix based on {} frames...".format(len(ipoints)))
+    print(f"\nCalibrating camera matrix based on {len(ipoints)} diverse frames...")
 
-    retval, K, dcoeffs, rvecs, tvecs = cv2.calibrateCamera(
-        opoints, ipoints, imagesize,
-        cameraMatrix=None,
-        distCoeffs=None,
-        flags=0
+    rms, K, dcoeffs, rvecs, tvecs = cv2.calibrateCamera(
+        opoints, ipoints, imagesize, None, None, flags=0
     )
 
+    print("\n" + "="*40)
+    print(f"RMS REPROJECTION ERROR: {rms:.4f} pixels")
+    if rms < 0.5:
+        print(" -> Excellent calibration!")
+    elif rms < 1.0:
+        print(" -> Good calibration.")
+    else:
+        print(" -> Poor calibration. Consider re-running and keeping the board flatter.")
+    print("="*40 + "\n")
+
     dist_flat = dcoeffs.ravel()
-    fx, fy = K[0, 0], K[1, 1]
-    cx, cy = K[0, 2], K[1, 2]
-    k1, k2, p1, p2, k3 = dist_flat[:5]
 
-    print('\nAll units below measured in pixels:')
-    print('  fx = {}'.format(fx))
-    print('  fy = {}'.format(fy))
-    print('  cx = {}'.format(cx))
-    print('  cy = {}'.format(cy))
-    print('\nLens distortion coefficients:')
-    print('  k1 = {}\n  k2 = {}\n  p1 = {}\n  p2 = {}\n  k3 = {}'.format(k1, k2, p1, p2, k3))
-    print('\nPastable profile dictionary for your tracking application:')
-    print("""cam_cal = {{
-    "fx": {},
-    "fy": {},
-    "cx": {},
-    "cy": {},
-    "k1": {},
-    "k2": {},
-    "p1": {},
-    "p2": {},
-    "k3": {}
-}}""".format(fx, fy, cx, cy, k1, k2, p1, p2, k3))
+    calib_data = {
+        "fx": K[0, 0], "fy": K[1, 1],
+        "cx": K[0, 2], "cy": K[1, 2],
+        "k1": dist_flat[0], "k2": dist_flat[1],
+        "p1": dist_flat[2], "p2": dist_flat[3],
+        "k3": dist_flat[4] if len(dist_flat) > 4 else 0.0,
+        "rms_error": rms,
+        "image_width": imagesize[0],
+        "image_height": imagesize[1]
+    }
 
-    print("\nShowing live calibration result. Press 'ESC' or 'q' on the preview window to exit.")
+    print('Camera Matrix (K):\n', K)
+    print('\nLens distortion coefficients:\n', dist_flat)
 
+    with open(options.output, 'w') as f:
+        json.dump(calib_data, f, indent=4)
+    print(f"\nCalibration data saved to {options.output}")
+
+    print("\nShowing live calibration result. Press 'ESC' or 'q' to exit.")
     h, w = imagesize[1], imagesize[0]
-    # Compute the optimal new camera matrix to handle undistorted image boundaries
+
     newcameramtx, roi = cv2.getOptimalNewCameraMatrix(K, dcoeffs, (w, h), 1, (w, h))
     x, y, roi_w, roi_h = roi
 
@@ -158,32 +173,24 @@ def main():
 
     while True:
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
 
-        # Undistort the live frame
         dst = cv2.undistort(frame, K, dcoeffs, None, newcameramtx)
-
-        # Crop the image based on the calculated optimal ROI
         dst_cropped = dst[y:y+roi_h, x:x+roi_w]
 
-        # Resize cropped image back to original size for a clean side-by-side view
         if dst_cropped.size > 0:
             dst_resized = cv2.resize(dst_cropped, (w, h))
         else:
-            dst_resized = dst # Fallback if ROI is empty
+            dst_resized = dst
 
-        # Stack raw and corrected images side-by-side
         canvas = np.hstack((frame, dst_resized))
-
-        # Labels
-        cv2.putText(canvas, "ORIGINAL (Distorted)", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.putText(canvas, "CORRECTED (Undistorted)", (w + 20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(canvas, "ORIGINAL (Distorted)", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(canvas, "CORRECTED (Undistorted)", (w + 20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         cv2.imshow(preview_win, canvas)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q') or key == 27: # 'q' or ESC
+        if key in [27, ord('q')]:
             break
 
     cap.release()
