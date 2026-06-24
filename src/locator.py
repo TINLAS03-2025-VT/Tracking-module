@@ -1,5 +1,6 @@
 import numpy as np
 import apriltag
+from scipy.spatial.transform import Rotation, Slerp
 
 class Locator:
 	def __init__(
