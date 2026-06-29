@@ -15,6 +15,7 @@ from ros_worker import AprilTagRosTracker, spin_ros_node
 
 import multiprocessing as mp
 from stream_server import start_stream_server
+from threaded_cam import ThreadedCamera
 
 def parse_args():
 	valid_profiles = [
@@ -51,12 +52,21 @@ def parse_target_tags(raw: str) -> dict:
 			result[int(item)] = f"robot_{index}"
 	return result
 
-def project_field_to_pixel(xf, yf, p0_cam, R_field, scale_units_per_meter, args, cam_cal):
-	pos_x_meters = (xf - args.t0x) / scale_units_per_meter
-	pos_y_meters = (yf - args.t0y) / scale_units_per_meter
+def project_field_points_to_pixel(points_field, p0_cam, R_field, scale_units_per_meter, args, cam_cal):
+	"""
+	Projects an array of field points [[xf1, yf1], [xf2, yf2], ...] to pixel coordinates.
+	"""
+	points_field = np.array(points_field, dtype=np.float32)
 
-	v_cam = pos_x_meters * R_field[:, 0] + pos_y_meters * R_field[:, 1] + p0_cam
+	# Translate from field origin and scale to meters
+	pos_x_meters = (points_field[:, 0] - args.t0x) / scale_units_per_meter
+	pos_y_meters = (points_field[:, 1] - args.t0y) / scale_units_per_meter
 
+	# Vectorized 3D conversion in camera space
+	v_cam = (pos_x_meters[:, None] * R_field[:, 0]) + \
+			(pos_y_meters[:, None] * R_field[:, 1]) + p0_cam
+
+	# Camera intrinsics matrix
 	mtx = np.array([
 		[cam_cal["fx"], 0, cam_cal["cx"]],
 		[0, cam_cal["fy"], cam_cal["cy"]],
@@ -64,12 +74,14 @@ def project_field_to_pixel(xf, yf, p0_cam, R_field, scale_units_per_meter, args,
 	], dtype=np.float32)
 	dist = np.zeros(5, dtype=np.float32)
 
+	# Project all points at once using OpenCV's optimized backend
 	pts_2d, _ = cv2.projectPoints(
-		np.array([v_cam], dtype=np.float32),
+		v_cam.astype(np.float32),
 		np.zeros(3), np.zeros(3), mtx, dist
 	)
-	x_pix, y_pix = int(pts_2d[0][0][0]), int(pts_2d[0][0][1])
-	return (x_pix, y_pix)
+
+	# Return as an integer array of shape (N, 2) pixels
+	return pts_2d.reshape(-1, 2).astype(int)
 
 def main():
 	# Parse arguments and environment variables from start command
@@ -100,12 +112,14 @@ def main():
 		print("Web UI broadcast cleanly isolated at http://localhost:8080")
 
 	# Open video stream
-	cap = cv2.VideoCapture(args.camera_index)
+	cap = ThreadedCamera(args.camera_index, width=1280, height=720)
+	cap.start()
+	time.sleep(0.5)
 
-	cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-
-	if not cap.isOpened():
-		print("Error: Could not open camera {args.camera_index}.")
+	ret, initial_frame = cap.read()
+	if not ret:
+		print(f"Error: Could not pull initial frame from camera {args.camera_index}.")
+		cap.release()
 		ros_node.destroy_node()
 		rclpy.shutdown()
 		return
@@ -138,20 +152,44 @@ def main():
 	field_smoothers = {}
 	POS_ALPHA = 0.25
 
+	last_perf_print = time.time()
+
 	print("Tracking active. Press 'q' in the debug window to exit.")
 	try:
 		while True:
+			# loop_start = time.time()
+			t0 = time.perf_counter()
 			# Get a frame
-			ret, frame = cap.read()
+			ret, frame_raw = cap.read()
 			if not ret:
 				print("Error: Failed to get frame.")
-				time.sleep(0.005)
+				# elapsed = time.time() - loop_start
+				# sleep_time = max(0.0, 0.01667 - elapsed)
+				# time.sleep(sleep_time)
 				break
+			# print("Got frame!")
+			t1 = time.perf_counter()
+
+			frame = frame_raw # cv2.resize(frame_raw, (1280, 720), interpolation=cv2.INTER_LINEAR)
+			t2 = time.perf_counter()
 
 			# Convert to grayscale and get the detected tags with estimated positions
 			gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-			detections = locator.detect(gray)
-			poses = locator.get_poses(detections)
+			# print("Created raw frame!")
+			t3 = time.perf_counter()
+
+			if calibrated:
+				wanted_tag_ids = set(target_tag_map.keys())
+			else:
+				wanted_tag_ids = {args.reference_tag_0, args.reference_tag_1}
+
+			detections = locator.detect(gray, wanted_tag_ids=wanted_tag_ids)
+			# print("Got detections!")
+			t4 = time.perf_counter()
+
+			poses = locator.get_poses(detections, wanted_tag_ids=wanted_tag_ids)
+			# print("Got poses!")
+			t5 = time.perf_counter()
 
 			# Show the detected tags in an image for debugging purposes
 			if args.show:
@@ -168,39 +206,58 @@ def main():
 				if calibrated:
 					min_x, max_x = min(args.t0x, args.t1x), max(args.t0x, args.t1x)
 					min_y, max_y = min(args.t0y, args.t1y), max(args.t0y, args.t1y)
-
 					grid_color = (100, 100, 100)
 
-					for x_val in range(int(np.ceil(min_x)), int(np.floor(max_x)) + 1):
-						p_start = project_field_to_pixel(x_val, min_y, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile)
-						p_end = project_field_to_pixel(x_val, max_y, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile)
-						# print(f"DEBUG GRID: X={x_val} projects to Pixel Start: {p_start}, Pixel End: {p_end}")
-						if p_start and p_end:
-							cv2.line(frame, p_start, p_end, grid_color, 1, cv2.LINE_AA)
-							cv2.putText(frame, f"X={x_val}", (p_start[0], p_start[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, grid_color, 1, cv2.LINE_AA)
+					# 1. Generate all grid line boundaries
+					x_vals = list(range(int(np.ceil(min_x)), int(np.floor(max_x)) + 1))
+					y_vals = list(range(int(np.ceil(min_y)), int(np.floor(max_y)) + 1))
 
-					for y_val in range(int(np.ceil(min_y)), int(np.floor(max_y)) + 1):
-						p_start = project_field_to_pixel(min_x, y_val, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile)
-						p_end = project_field_to_pixel(max_x, y_val, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile)
-						# print(f"DEBUG GRID: Y={y_val} projects to Pixel Start: {p_start}, Pixel End: {p_end}")
-						if p_start and p_end:
-							cv2.line(frame, p_start, p_end, grid_color, 1, cv2.LINE_AA)
-							cv2.putText(frame, f"Y={y_val}", (p_start[0] + 5, p_start[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.35, grid_color, 1, cv2.LINE_AA)
+					grid_points = []
 
-					f_corners = [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)]
-					pixel_corners = [
-						project_field_to_pixel(cx, cy, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile)
-						for cx, cy in f_corners
-					]
+					# Append start/end pairs for X lines
+					for x_val in x_vals:
+						grid_points.append([x_val, min_y])
+						grid_points.append([x_val, max_y])
 
-					boundary_color = (0, 255, 255) # Bright yellow/cyan field boundary
+					# Append start/end pairs for Y lines
+					for y_val in y_vals:
+						grid_points.append([min_x, y_val])
+						grid_points.append([max_x, y_val])
+
+					# Append outer boundary corner points (4 corners)
+					f_corners = [[min_x, min_y], [max_x, min_y], [max_x, max_y], [min_x, max_y]]
+					grid_points.extend(f_corners)
+
+					# 2. Project EVERY point in a single batch call
+					all_pixels = project_field_points_to_pixel(
+						grid_points, locked_p0_cam, locked_R_field, locked_scale, args, cam_cal_profile
+					)
+
+					# 3. Dissect the single flat pixel array back into drawing segments
+					idx = 0
+
+					# Draw X lines
+					for x_val in x_vals:
+						p_start, p_end = tuple(all_pixels[idx]), tuple(all_pixels[idx+1])
+						cv2.line(frame, p_start, p_end, grid_color, 1, cv2.LINE_AA)
+						cv2.putText(frame, f"X={x_val}", (p_start[0], p_start[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, grid_color, 1, cv2.LINE_AA)
+						idx += 2
+
+					# Draw Y lines
+					for y_val in y_vals:
+						p_start, p_end = tuple(all_pixels[idx]), tuple(all_pixels[idx+1])
+						cv2.line(frame, p_start, p_end, grid_color, 1, cv2.LINE_AA)
+						cv2.putText(frame, f"Y={y_val}", (p_start[0] + 5, p_start[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.35, grid_color, 1, cv2.LINE_AA)
+						idx += 2
+
+					# Draw outer thick boundaries
+					pixel_corners = all_pixels[idx:idx+4]
+					boundary_color = (0, 255, 255)
 					for i in range(4):
-						pA = pixel_corners[i]
-						pB = pixel_corners[(i + 1) % 4]
-						if pA and pB:
-							cv2.line(frame, pA, pB, boundary_color, 2, cv2.LINE_AA)
+						pA = tuple(pixel_corners[i])
+						pB = tuple(pixel_corners[(i + 1) % 4])
+						cv2.line(frame, pA, pB, boundary_color, 2, cv2.LINE_AA)
 
-				frame_downscaled = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
 				if web_queue is not None:
 					try:
 						if web_queue.full():
@@ -209,9 +266,10 @@ def main():
 							except Exception:
 								pass
 
-						web_queue.put_nowait(frame_downscaled)
+						web_queue.put_nowait(frame)
 					except Exception:
 						pass
+			tshow = time.perf_counter()
 
 			# 1. Extract reference orientations and positions
 			current_pylons = {}
@@ -238,7 +296,9 @@ def main():
 				else:
 					print("Calibration holding: Both reference tags must be cleanly visible.")
 
-					time.sleep(0.01667)
+					# elapsed = time.time() - loop_start
+					# sleep_time = max(0.0, 0.01667 - elapsed)
+					# time.sleep(sleep_time)
 					continue
 
 				if calibration_frames_gathered >= REQUIRED_CAL_FRAMES:
@@ -286,7 +346,9 @@ def main():
 					calibrated = True
 					print(">>> FIELD CALIBRATION LOCKED SUCCESSFUL. Tracking active. <<<")
 
-				time.sleep(0.01667)
+				# elapsed = time.time() - loop_start
+				# sleep_time = max(0.0, 0.01667 - elapsed)
+				# time.sleep(sleep_time)
 				continue
 
 			current_frame_robots = []
@@ -324,12 +386,13 @@ def main():
 
 					R_relative = locked_R_field.T @ R_target_cam
 
-					u, _, vh = np.linalg.svd(R_relative)
-					R_orthogonal = np.dot(u, vh)
-
-					if np.linalg.det(R_orthogonal) < 0:
-						u[:, 2] *= -1
-						R_orthogonal = np.dot(u, vh)
+					# u, _, vh = np.linalg.svd(R_relative)
+					# R_orthogonal = np.dot(u, vh)
+     #
+					# if np.linalg.det(R_orthogonal) < 0:
+					# 	u[:, 2] *= -1
+					# 	R_orthogonal = np.dot(u, vh)
+					R_orthogonal = R_relative
 
 					tag_forward_in_field = R_orthogonal[:, 1]
 					theta_rad = np.arctan2(-tag_forward_in_field[1], -tag_forward_in_field[0])
@@ -338,12 +401,32 @@ def main():
 					robot_id = target_tag_map[tag_id]
 					current_frame_robots.append((robot_id, final_field_x, final_field_y, theta_rad))
 
-					print(f"Chariot tag = {tag_id}, id {robot_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Heading: {angle_degrees:.2f}°")
+					# print(f"Chariot tag = {tag_id}, id {robot_id} -> Field Pos: ({final_field_x:.2f}, {final_field_y:.2f}) | Heading: {angle_degrees:.2f}°")
+
+			t6 = time.perf_counter()
 
 			ros_node.update_robot_data(current_frame_robots)
 			ros_node.publish_latest_poses()
+			t7 = time.perf_counter()
 
-			time.sleep(0.01667)
+			if time.time() - last_perf_print > 1.0:
+				print(
+					f"[PERF] read={(t1-t0)*1000:.1f}ms "
+					f"downscale ={(t2-t1)*1000:.1f}ms "
+					f"gray={(t3-t2)*1000:.1f}ms "
+					f"detect={(t4-t3)*1000:.1f}ms "
+					f"poses={(t5-t4)*1000:.1f}ms "
+					f"show={(tshow-t5)*1000:.1f}ms "
+					f"calc={(t6-tshow)*1000:.1f}ms "
+					f"ros={(t7-t6)*1000:.1f}ms "
+					f"total={(t7-t0)*1000:.1f}ms"
+				)
+				last_perf_print = time.time()
+
+
+			# elapsed = time.time() - loop_start
+			# sleep_time = max(0.0, 0.01667 - elapsed)
+			# time.sleep(sleep_time)
 
 	except KeyboardInterrupt:
 		print("\nShutting down pipeline components...")

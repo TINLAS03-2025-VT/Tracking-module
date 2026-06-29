@@ -1,6 +1,7 @@
+import time
+import cv2
 import numpy as np
 import apriltag
-from scipy.spatial.transform import Rotation, Slerp
 
 class Locator:
 	def __init__(
@@ -9,12 +10,13 @@ class Locator:
 		tag_size = 0.15,
 		alpha_lateral = 0.15,
 		alpha_forward = 0.25,
-		alpha_rotation = 0.20,
-		pylon_tags_ids = (0, 1)
+		pylon_tags_ids = (0, 1),
+		roi_size = 200,
+		full_scan_interval = 0.5
 	):
 		self.detector = apriltag.apriltag(
 			family='tagStandard41h12',   # Tag family
-			threads=10,                  # Number of threads
+			threads=6,                  # Number of threads
 			maxhamming=1,                # Maximum hamming distance for error correction
 			decimate=1.0,                # Image downsampling factor
 			blur=0.0,                    # Gaussian blur sigma
@@ -27,19 +29,38 @@ class Locator:
 
 		self.ALPHA_LATERAL = alpha_lateral
 		self.ALPHA_FORWARD = alpha_forward
-		self.ALPHA_ROTATION = alpha_rotation
 		self.PYLON_TAG_IDS = pylon_tags_ids
+
+		self.ROI_SIZE = roi_size
+		self.FULL_SCAN_INTERVAL = full_scan_interval
+		self.last_full_scan_time = 0.0
+		self.last_pixel_centers = {}
 
 		self.poses = {}
 
-	def detect(self, grayscale_frame):
-		return self.detector.detect(grayscale_frame)
+	def detect(self, grayscale_frame, wanted_tag_ids=None):
+		detections = self.detector.detect(grayscale_frame)
 
-	def get_poses(self, detections):
+		if wanted_tag_ids is None:
+			return detections
+
+		filtered_detections = [
+			det for det in detections if det["id"] in wanted_tag_ids
+		]
+
+		return filtered_detections
+
+	def get_poses(self, detections, wanted_tag_ids=None):
 		current_frame_ids = set()
+
+		if wanted_tag_ids is None:
+			return {}
 
 		for detection in detections:
 			tag_id = detection["id"]
+			if tag_id not in wanted_tag_ids:
+				continue
+
 			current_frame_ids.add(tag_id)
 
 			raw_pose = self.detector.estimate_tag_pose(
@@ -63,23 +84,7 @@ class Locator:
 			alphas = np.array([self.ALPHA_LATERAL, self.ALPHA_LATERAL, self.ALPHA_FORWARD])
 			stable_t = (alphas * raw_t) + ((1.0 - alphas) * prev_t)
 
-			try:
-				rot_prev = Rotation.from_matrix(prev_R)
-				rot_raw = Rotation.from_matrix(raw_R)
-
-				# Create a keyframe interpolation structure for times [0, 1]
-				times = [0.0, 1.0]
-				quats = Rotation.from_quat([rot_prev.as_quat(), rot_raw.as_quat()])
-				slerp = Slerp(times, quats)
-
-				# Interpolate based on your alpha_rotation value
-				stable_rotation = slerp([self.ALPHA_ROTATION])
-				stable_R = stable_rotation.as_matrix()[0]
-			except Exception:
-				# Fallback to raw if matrix noise forces mathematical singularities
-				stable_R = raw_R
-
-			self.poses[tag_id] = {"t": stable_t, "R": stable_R}
+			self.poses[tag_id] = {"t": stable_t, "R": raw_R}
 
 		self.poses = {tag_id: pose for tag_id, pose in self.poses.items() if tag_id in current_frame_ids}
 
