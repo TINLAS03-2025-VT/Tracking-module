@@ -18,8 +18,8 @@ services:
       - /lib/modules:/lib/modules:ro
 
   tracker:
-    image: ghcr.io/tinlas03-2025-vt/tracking-module:latest
-    # build: ./ # For testing
+    # image: ghcr.io/tinlas03-2025-vt/tracking-module:latest
+    build: ./ # For testing
     container_name: tracking-module
     restart: unless-stopped
     network_mode: service:wireguard-client
@@ -55,4 +55,4 @@ services:
       done;
       echo 'tracker contained wg0 ready';
       ip addr show wg0;
-      python3 src/main.py --show"
+      python3 src/main.py"
