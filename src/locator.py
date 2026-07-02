@@ -39,16 +39,16 @@ class Locator:
 		self.poses = {}
 
 	def detect(self, grayscale_frame, wanted_tag_ids=None):
-		detections = self.detector.detect(grayscale_frame)
+		return self.detector.detect(grayscale_frame)
 
-		if wanted_tag_ids is None:
-			return detections
-
-		filtered_detections = [
-			det for det in detections if det["id"] in wanted_tag_ids
-		]
-
-		return filtered_detections
+		# if wanted_tag_ids is None:
+		# 	return detections
+  #
+		# filtered_detections = [
+		# 	det for det in detections if det["id"] in wanted_tag_ids
+		# ]
+  #
+		# return filtered_detections
 
 	def get_poses(self, detections, wanted_tag_ids=None):
 		current_frame_ids = set()

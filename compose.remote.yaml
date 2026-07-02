@@ -55,4 +55,4 @@ services:
       done;
       echo 'tracker contained wg0 ready';
       ip addr show wg0;
-      python3 src/main.py"
+      python3 src/main.py --show"
