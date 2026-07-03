@@ -158,7 +158,7 @@ def main():
 	try:
 		while True:
 			# loop_start = time.time()
-			t0 = time.perf_counter()
+			t0 = time.perf_counter()	# M.B.: For each t0, t1, t2, use more descriptive names. It's unclear which block's performance is checked
 			# Get a frame
 			ret, frame_raw = cap.read()
 			if not ret:
@@ -191,6 +191,7 @@ def main():
 			# print("Got poses!")
 			t5 = time.perf_counter()
 
+# M.B.: Put the following code, showing the detected tags in an image, in a helper function. The locator class seems ideal for this purpose
 			# Show the detected tags in an image for debugging purposes
 			if args.show:
 				# Draw detections
@@ -275,12 +276,15 @@ def main():
 			current_pylons = {}
 			current_normals = []
 
+# M.B.: Put this in the scope of the "if not calibrated" block
 			for tag_id, pose_data in poses.items(): # Get the normals from the reference tags and one of their positions
 				if tag_id in (args.reference_tag_0, args.reference_tag_1):
 					current_normals.append(pose_data["R"][:, 2])
 					current_pylons[tag_id] = pose_data["t"]
 
-			if not calibrated:
+# M.B.: Put this entire block in its own helper function
+# M.B.: It also seems to be for calibrating the field perimeters, which isn't clear from the "calibrated variable or block"
+			if not calibrated: 			
 				if args.reference_tag_0 in current_pylons and args.reference_tag_1 in current_pylons:
 					accumulated_p0.append(current_pylons[args.reference_tag_0])
 					accumulated_p1.append(current_pylons[args.reference_tag_1])
@@ -300,7 +304,7 @@ def main():
 					# sleep_time = max(0.0, 0.01667 - elapsed)
 					# time.sleep(sleep_time)
 					continue
-
+# M.B.: Put this entire block in another helper function, and add comments describing what it's doing and for.
 				if calibration_frames_gathered >= REQUIRED_CAL_FRAMES:
 					# Compute robust locked coordinate space rules
 					locked_p0_cam = np.mean(accumulated_p0, axis=0)
@@ -352,7 +356,8 @@ def main():
 				continue
 
 			current_frame_robots = []
-
+# M.B.: Put this entire block in its own helper function
+# M.B.: It seems like the block calculates the positions based on camera height and the field perimeters. This should be done in helper functions and the Locator class seems ideal for this purpose
 			for tag_id, pose_data in poses.items():
 				if tag_id not in (args.reference_tag_0, args.reference_tag_1):
 					if tag_id not in target_tag_map:
@@ -408,7 +413,7 @@ def main():
 			ros_node.update_robot_data(current_frame_robots)
 			ros_node.publish_latest_poses()
 			t7 = time.perf_counter()
-
+# M.B.: This debugging could be put in a helper function
 			if time.time() - last_perf_print > 1.0:
 				print(
 					f"[PERF] read={(t1-t0)*1000:.1f}ms "

@@ -21,25 +21,28 @@ class AprilTagRosTracker(Node):
         self.target_tag_map = target_tag_map
 
         self.pose_array_pub = self.create_publisher(PoseArray, self.output_topic, 10)
-        self.individual_pubs = {}
+        self.individual_pubs = {}   # M.B.: Should get initialized immediately using the given target_tag_map
         self.data_lock = Lock()
         self.latest_robots: List[Tuple[str, float, float, float]] = []
 
         self.get_logger().info(f"Publishing aggregate poses to {self.output_topic}")
         self.get_logger().info(f"Target tag map: {self.target_tag_map}")
 
-    def update_robot_data(self, robots: List[Tuple[str, float, float, float]]):
+    def update_robot_data(self, robots: List[Tuple[str, float, float, float]]): 
+        # M.B.: This helper should be private and used in publish_latest_poses
+        # Therefore, whilst this helper is clean, this means is no need for a lock or latest_robots field when the robot poses are immediately used in publish_latest_poses
+        # In the main, update_robot_data is also only called once
         with self.data_lock:
             self.latest_robots = robots
 
-    def get_individual_pub(self, robot_id: str):
+    def get_individual_pub(self, robot_id: str): # M.B.: Good helper function, should be used during initialization and set private afterwards
         if robot_id not in self.individual_pubs:
             topic = f"/{robot_id}/pose"
             self.individual_pubs[robot_id] = self.create_publisher(PoseStamped, topic, 10)
             self.get_logger().info(f"Publishing individual pose to {topic}")
         return self.individual_pubs[robot_id]
 
-    def publish_latest_poses(self):
+    def publish_latest_poses(self): # M.B.: This function should use the update_robot_data
         with self.data_lock:
             robots = list(self.latest_robots)
 
@@ -70,5 +73,5 @@ class AprilTagRosTracker(Node):
         if robots:
             self.pose_array_pub.publish(pose_array)
 
-def spin_ros_node(node):
+def spin_ros_node(node): # M.B.: Should be in the AprilTagRosTracker class itself
     rclpy.spin(node)

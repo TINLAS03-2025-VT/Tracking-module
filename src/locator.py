@@ -40,6 +40,8 @@ class Locator:
 
 	def detect(self, grayscale_frame, wanted_tag_ids=None):
 		return self.detector.detect(grayscale_frame)
+	
+		# M.B.: Remove the following comments
 
 		# if wanted_tag_ids is None:
 		# 	return detections
@@ -56,7 +58,7 @@ class Locator:
 		if wanted_tag_ids is None:
 			return {}
 
-		for detection in detections:
+		for detection in detections: # M.B.: This function should use the detect function internally
 			tag_id = detection["id"]
 			if tag_id not in wanted_tag_ids:
 				continue
@@ -69,7 +71,7 @@ class Locator:
 				self.CAM_CAL["fx"], self.CAM_CAL["fy"],
 				self.CAM_CAL["cx"], self.CAM_CAL["cy"]
 			)
-
+			# M.B.: Use a more descriptive variable names or explain them
 			raw_t = np.array(raw_pose["t"]).flatten()
 			raw_R = np.array(raw_pose["R"])
 

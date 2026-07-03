@@ -1,3 +1,4 @@
+# M.B.: Not intrisically needed, but add a small explanation of what this file contains
 logitech_cam = {
     "fx": 1636.854134895128,
     "fy": 1635.7987587739817,

@@ -19,7 +19,7 @@ def board_moved_significantly(last_corners, current_corners, threshold=40.0):
     return dist > threshold
 
 def main():
-
+    # M.B.: Put parsing into helper function
     parser = argparse.ArgumentParser(
         description='Calibrate camera intrinsics using OpenCV via live video stream')
     parser.add_argument('-i', '--camera-index', type=int, default=0,
@@ -38,10 +38,11 @@ def main():
     options = parser.parse_args()
 
     patternsize = (options.cols, options.rows)
-    sz = options.size
+    sz = options.size # M.B.: Use a more descriptive variable name
 
     term_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
+    # M.B.: Add comment to explain what this does, mainly why
     x = np.arange(patternsize[0]) * sz
     y = np.arange(patternsize[1]) * sz
     xgrid, ygrid = np.meshgrid(x, y)
@@ -52,6 +53,7 @@ def main():
     win = 'Calibrate - Live Stream (Vary distance and angles!)'
     cv2.namedWindow(win)
 
+    # M.B.: Use more descriptive variable names or add comments explaining what they are for
     ipoints = []
     opoints = []
     last_saved_corners = None
@@ -68,6 +70,7 @@ def main():
     start_time = time.time()
     last_sample_time = 0
 
+    # M.B.: Put this entire while loop in a helper function, together with the above statics/globals used in the calibration loop
     while True:
         elapsed_time = time.time()- start_time
         remaining_time = max(0, int(duration - elapsed_time))
@@ -76,7 +79,7 @@ def main():
             print("\nFinished gathering calibration data.")
             break
 
-        ret, rgb = cap.read()
+        ret, rgb = cap.read() # M.B.: Use more decriptive name than rgb
         if not ret:
             print("Failed to get frame.")
             time.sleep(0.005)
@@ -85,18 +88,19 @@ def main():
         if imagesize is None:
             imagesize = (rgb.shape[1], rgb.shape[0])
 
-        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY) if len(rgb.shape) == 3 else rgb
+        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY) if len(rgb.shape) == 3 else rgb # M.B.: Why?
 
         retval, corners = cv2.findChessboardCorners(gray, patternsize, None)
-        display = rgb.copy()
+        display = rgb.copy()    # M.B.: There seems to be no reason to copy the rgb variable, the frame
 
         if retval:
             cv2.drawChessboardCorners(display, patternsize, corners, retval)
 
+            # M.B.: For cleanliness this could be in a helper, however simple comments help as well
             current_time = time.time()
             if current_time - last_sample_time > 0.5:
                 if board_moved_significantly(last_saved_corners, corners):
-                    corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term_criteria)
+                    corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), term_criteria) # M.B.: Use a more descriptive variable name than corners2, since "corner" already exists
 
                     ipoints.append(corners2)
                     opoints.append(opoints_single)
@@ -128,9 +132,10 @@ def main():
 
     print(f"\nCalibrating camera matrix based on {len(ipoints)} diverse frames...")
 
+    # M.B.: Use more descriptive variable names, since the return names aren't clear from the calibrateCamera function itself. RMS is correct, the rest isn't clear enough
     rms, K, dcoeffs, rvecs, tvecs = cv2.calibrateCamera(
         opoints, ipoints, imagesize, None, None, flags=0
-    )
+    )   
 
     print("\n" + "="*40)
     print(f"RMS REPROJECTION ERROR: {rms:.4f} pixels")
@@ -142,7 +147,7 @@ def main():
         print(" -> Poor calibration. Consider re-running and keeping the board flatter.")
     print("="*40 + "\n")
 
-    dist_flat = dcoeffs.ravel()
+    dist_flat = dcoeffs.ravel()     # M.B.: Use a more descriptive variable name
 
     calib_data = {
         "fx": K[0, 0], "fy": K[1, 1],
@@ -162,6 +167,7 @@ def main():
         json.dump(calib_data, f, indent=4)
     print(f"\nCalibration data saved to {options.output}")
 
+    # M.B.: Put this in a seperate helper function to seperate calibration and the live preview
     print("\nShowing live calibration result. Press 'ESC' or 'q' to exit.")
     h, w = imagesize[1], imagesize[0]
 
