@@ -132,7 +132,9 @@ Use the camera calibration script when a new camera profile is needed:
 python src/calibrate/calibrate_camera.py -r 6 -c 9 -s 23 -i 5
 ```
 
-The generated calibration data must be added to `src/defines.py` and selected with `CAMERA_PROFILE`.
+*Note: The command above is for a 7 rows, 10 columns, 23 mm checkerboard pattern, calibrating camera with id 5 (`/dev/video5`).*
+
+The generated calibration data must be added from `camera_calib.json` to `src/defines.py` and selected with `CAMERA_PROFILE`.
 
 ## Connections
 
